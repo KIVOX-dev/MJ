@@ -91,3 +91,16 @@ describe('TelegramBotClient', () => {
     expect(err.message).not.toContain('SECRETTOKEN');
   });
 });
+
+describe('MongoMessageStore duplicate detection', () => {
+  it('does not treat unrelated unique-index clashes as duplicates', async () => {
+    const { MessageModel } = await import('../src/models/message.model');
+    const { MongoMessageStore } = await import('../src/core/memory/message.store');
+    const spy = vi.spyOn(MessageModel, 'create');
+    spy.mockRejectedValueOnce(Object.assign(new Error('dup'), { code: 11000, keyPattern: { waMessageId: 1 } }));
+    await expect(new MongoMessageStore('telegram').claimInbound('1', 'u', 't', 'text')).rejects.toThrow();
+    spy.mockRejectedValueOnce(Object.assign(new Error('dup'), { code: 11000, keyPattern: { channel: 1, externalId: 1 } }));
+    expect(await new MongoMessageStore('telegram').claimInbound('1', 'u', 't', 'text')).toBe(false);
+    spy.mockRestore();
+  });
+});

@@ -1,3 +1,4 @@
+import { logger } from '../../utils/logger';
 import { MessageModel } from '../../models/message.model';
 
 export type Channel = 'whatsapp' | 'telegram';
@@ -22,13 +23,20 @@ export class MongoMessageStore implements MessageStore {
       await MessageModel.create({ channel: this.channel, externalId, from, direction: 'in', text, type });
       return true;
     } catch (err) {
-      if ((err as { code?: number }).code === 11000) return false;
+      // Only a collision on (channel, externalId) means "duplicate delivery". Any other
+      // unique-index clash is a real bug and must surface, not be mistaken for a duplicate.
+      const e = err as { code?: number; keyPattern?: Record<string, unknown> };
+      if (e.code === 11000 && e.keyPattern && 'externalId' in e.keyPattern) return false;
       throw err;
     }
   }
 
   async saveOutbound(externalId: string, to: string, text: string): Promise<void> {
-    await MessageModel.create({ channel: this.channel, externalId, from: to, direction: 'out', text }).catch(() => undefined);
+    try {
+      await MessageModel.create({ channel: this.channel, externalId, from: to, direction: 'out', text });
+    } catch (err) {
+      logger.error({ err: { message: (err as Error).message } }, 'Failed to store outbound message');
+    }
   }
 
   async recent(limit: number): Promise<StoredMessage[]> {

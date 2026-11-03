@@ -1,5 +1,6 @@
 import { loadConfig } from './config';
 import { connectDatabase, disconnectDatabase, isDatabaseConnected } from './config/database';
+import { MessageModel } from './models/message.model';
 import { createApp } from './app';
 import { GroqService } from './core/ai-engine/groq.service';
 import { MongoMessageStore } from './core/memory/message.store';
@@ -13,6 +14,8 @@ import { logger } from './utils/logger';
 async function main() {
   const config = loadConfig();
   await connectDatabase(config.mongoUri, config.dnsServers);
+  // Keep DB indexes in line with the schemas (drops stale ones left by older versions).
+  await MessageModel.syncIndexes();
 
   const extraRouters: Router[] = [];
   const wa = config.whatsapp;
