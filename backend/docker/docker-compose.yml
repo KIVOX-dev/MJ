@@ -1,0 +1,16 @@
+# Local smoke test of the production image (run from repo root):
+#   docker compose -f docker/docker-compose.yml up --build
+# Secrets come from your local .env (never baked into the image).
+services:
+  mj:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: mj:latest
+    platform: linux/amd64
+    env_file: ../.env
+    environment:
+      NODE_ENV: production
+      PORT: "9000"
+    ports:
+      - "9000:9000"

@@ -1,0 +1,40 @@
+{
+  "name": "mj",
+  "version": "0.1.0",
+  "description": "MJ - WhatsApp-first personal AI assistant",
+  "private": true,
+  "main": "dist/server.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "build": "tsc -p tsconfig.build.json",
+    "start": "node dist/server.js",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "docker:build": "docker build --platform linux/amd64 -f docker/Dockerfile -t mj:latest .",
+    "docker:up": "docker compose -f docker/docker-compose.yml up --build"
+  },
+  "dependencies": {
+    "cors": "^2.8.6",
+    "dotenv": "^17.0.0",
+    "express": "^5.1.0",
+    "express-rate-limit": "^8.0.0",
+    "groq-sdk": "^1.6.0",
+    "helmet": "^8.0.0",
+    "mongoose": "^9.0.0",
+    "pino": "^10.0.0",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.0",
+    "@types/node": "^24.0.0",
+    "@types/supertest": "^6.0.0",
+    "supertest": "^7.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.9.0",
+    "vitest": "^4.0.0"
+  }
+}
