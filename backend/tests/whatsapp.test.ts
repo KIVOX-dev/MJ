@@ -6,7 +6,7 @@ import { whatsappRouter } from '../src/routes/whatsapp.routes';
 import { verifySignature } from '../src/modules/communication-manager/whatsapp/signature';
 import { processWebhook } from '../src/modules/communication-manager/whatsapp/whatsapp.handler';
 import { WhatsAppCloudClient } from '../src/modules/communication-manager/whatsapp/whatsapp.client';
-import type { MessageStore } from '../src/modules/communication-manager/whatsapp/message.store';
+import type { MessageStore } from '../src/core/memory/message.store';
 
 const SECRET = 'app-secret';
 const OWNER = '919876543210';
@@ -35,7 +35,7 @@ function setup() {
   const sender = { sendText: vi.fn().mockResolvedValue({ messageId: 'out1' }) };
   const ai = { complete: vi.fn().mockResolvedValue('Very well, Sir.') };
   const deps = { verifyToken: 'vt', appSecret: SECRET, ownerNumber: OWNER, store: memoryStore(), ai, sender };
-  const app = createApp({ isDbConnected: () => true, extraRouters: [whatsappRouter(deps)] });
+  const app = createApp({ isDbConnected: () => true, extraRouters: [whatsappRouter({ verifyToken: 'vt', messaging: deps })] });
   return { app, sender, ai, deps };
 }
 const tick = () => new Promise((r) => setTimeout(r, 20));
@@ -61,6 +61,16 @@ describe('webhook verification (GET)', () => {
     const { app } = setup();
     const res = await request(app).get('/webhook/whatsapp?hub.mode=subscribe&hub.verify_token=bad&hub.challenge=1');
     expect(res.status).toBe(403);
+  });
+});
+
+describe('verification-only mode', () => {
+  it('verifies the token but refuses messages (503) when messaging is not configured', async () => {
+    const app = createApp({ isDbConnected: () => true, extraRouters: [whatsappRouter({ verifyToken: 'vt' })] });
+    const ok = await request(app).get('/webhook/whatsapp?hub.mode=subscribe&hub.verify_token=vt&hub.challenge=9');
+    expect(ok.text).toBe('9');
+    const post = await request(app).post('/webhook/whatsapp').set('Content-Type', 'application/json').send('{}');
+    expect(post.status).toBe(503);
   });
 });
 

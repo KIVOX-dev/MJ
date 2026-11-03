@@ -1,12 +1,8 @@
 import { logger } from '../../../utils/logger';
-import type { ChatMessage } from '../../../core/ai-engine/groq.service';
+import { generateReply, type Completer } from '../../../core/orchestrator/assistant';
+import type { MessageStore } from '../../../core/memory/message.store';
 import { digitsOnly } from './signature';
 import type { WhatsAppSender } from './whatsapp.client';
-import type { MessageStore } from './message.store';
-
-export interface Completer {
-  complete(messages: ChatMessage[], opts?: { temperature?: number; maxTokens?: number }): Promise<string>;
-}
 
 export interface HandlerDeps {
   ownerNumber: string;
@@ -14,13 +10,6 @@ export interface HandlerDeps {
   ai: Completer;
   sender: WhatsAppSender;
 }
-
-const SYSTEM_PROMPT =
-  'You are MJ, a personal AI assistant (secretary, communication manager and research assistant) ' +
-  'working for one user, whom you address as "Sir" where appropriate. Be concise, respectful and professional. ' +
-  'Reply in the language the user writes in (English or Tamil). You are replying over WhatsApp, so keep ' +
-  'answers short and use plain text. Never claim to have performed an action (sending email, scheduling, ' +
-  'setting reminders) because those tools are not connected yet; say so honestly if asked.';
 
 interface InboundMessage {
   id: string;
@@ -68,21 +57,7 @@ export async function processWebhook(payload: unknown, deps: HandlerDeps): Promi
         continue;
       }
 
-      const history = await deps.store.recent(8);
-      // history already includes the just-stored inbound message as the latest "in".
-      const turns: ChatMessage[] = history.map((h) => ({
-        role: h.direction === 'in' ? ('user' as const) : ('assistant' as const),
-        content: h.text,
-      }));
-      if (!turns.length || turns[turns.length - 1]!.content !== text) turns.push({ role: 'user', content: text });
-
-      let reply: string;
-      try {
-        reply = await deps.ai.complete([{ role: 'system', content: SYSTEM_PROMPT }, ...turns]);
-      } catch (err) {
-        logger.error({ err: { message: (err as Error).message } }, 'AI completion failed');
-        reply = 'Apologies, Sir. I am unable to respond right now. Please try again shortly.';
-      }
+      const reply = await generateReply(deps.store, deps.ai, text);
       const sent = await deps.sender.sendText(msg.from, reply);
       await deps.store.saveOutbound(sent.messageId, msg.from, reply);
     } catch (err) {

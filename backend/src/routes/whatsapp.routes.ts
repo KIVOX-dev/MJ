@@ -3,9 +3,10 @@ import { logger } from '../utils/logger';
 import { verifySignature } from '../modules/communication-manager/whatsapp/signature';
 import { processWebhook, type HandlerDeps } from '../modules/communication-manager/whatsapp/whatsapp.handler';
 
-export interface WhatsAppRouteDeps extends HandlerDeps {
+export interface WhatsAppRouteDeps {
   verifyToken: string;
-  appSecret: string;
+  /** Present only when fully configured; without it POSTs are refused (503) but verification still works. */
+  messaging?: HandlerDeps & { appSecret: string };
 }
 
 const PATHS = ['/webhook/whatsapp', '/api/webhook/whatsapp'];
@@ -25,8 +26,14 @@ export function whatsappRouter(deps: WhatsAppRouteDeps): Router {
 
   // Raw body is required: the signature is computed over the exact bytes Meta sent.
   r.post(PATHS, express.raw({ type: '*/*', limit: '2mb' }), (req, res) => {
+    const m = deps.messaging;
+    if (!m) {
+      logger.warn('WhatsApp message received but messaging is not fully configured');
+      res.sendStatus(503);
+      return;
+    }
     const raw = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
-    if (!verifySignature(raw, req.header('x-hub-signature-256'), deps.appSecret)) {
+    if (!verifySignature(raw, req.header('x-hub-signature-256'), m.appSecret)) {
       logger.warn('Rejected WhatsApp webhook with invalid signature');
       res.sendStatus(401);
       return;
@@ -40,7 +47,7 @@ export function whatsappRouter(deps: WhatsAppRouteDeps): Router {
     }
     // Acknowledge fast (Meta retries on slow responses), process in the background.
     res.sendStatus(200);
-    void processWebhook(payload, deps);
+    void processWebhook(payload, m);
   });
 
   return r;
