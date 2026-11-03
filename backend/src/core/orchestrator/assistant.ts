@@ -7,6 +7,11 @@ export interface ToolChat {
   chat(messages: ChatMessage[], opts?: { tools?: ToolSpec[] }): Promise<ChatResult>;
 }
 
+/** Minimal text-completion capability (satisfied by GroqService). */
+export interface Completer {
+  complete(messages: ChatMessage[], opts?: { temperature?: number; maxTokens?: number }): Promise<string>;
+}
+
 export interface AgentContext {
   channel: Channel;
   chatId: string;

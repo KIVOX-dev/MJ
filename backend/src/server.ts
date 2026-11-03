@@ -11,6 +11,15 @@ import { ToolRegistry } from './core/tool-registry';
 import { MongoReminderRepo } from './modules/personal-secretary/reminders/reminder.repo';
 import { ReminderService } from './modules/personal-secretary/reminders/reminder.service';
 import { registerReminderTools } from './modules/personal-secretary/reminders/reminder.tools';
+import { CompositeNewsSource, GoogleNewsSource, THE_HINDU_TN, googleNewsFeed } from './modules/research-assistant/web-search/rss';
+import { BreakingNewsService } from './modules/research-assistant/web-search/breaking-news.service';
+import { MongoSeenRepo } from './jobs/seen.repo';
+import { SeenArticleModel } from './models/seen-article.model';
+import { NewsdataClient } from './modules/research-assistant/web-search/newsdata.client';
+import { registerNewsTools } from './modules/research-assistant/web-search/news.tools';
+import { NewsDigestService } from './modules/personal-secretary/briefing/news-digest.service';
+import { MongoJobRunRepo } from './jobs/job-run.repo';
+import { JobRunModel } from './models/job-run.model';
 import { startDispatcher } from './jobs/dispatcher';
 import { jobsRouter } from './routes/jobs.routes';
 import { WhatsAppCloudClient } from './modules/communication-manager/whatsapp/whatsapp.client';
@@ -23,12 +32,17 @@ async function main() {
   const config = loadConfig();
   await connectDatabase(config.mongoUri, config.dnsServers);
   // Keep DB indexes in line with the schemas (drops stale ones left by older versions).
-  await Promise.all([MessageModel.syncIndexes(), ReminderModel.syncIndexes()]);
+  await Promise.all([MessageModel.syncIndexes(), ReminderModel.syncIndexes(), JobRunModel.syncIndexes(), SeenArticleModel.syncIndexes()]);
 
   const groq = GroqService.fromConfig(config.groq);
   const reminders = new ReminderService(new MongoReminderRepo(), config.timezone);
   const registry = new ToolRegistry();
   registerReminderTools(registry, reminders);
+  // Fresh headlines come from Google News RSS (free, real-time); Newsdata (free plan is ~12 h delayed) adds depth.
+  const newsSources = [new GoogleNewsSource(), ...(config.news.apiKey ? [new NewsdataClient(config.news.apiKey)] : [])];
+  if (!config.news.apiKey) logger.warn('NEWSDATA_API_KEY not set: using Google News RSS only');
+  const news = new CompositeNewsSource(newsSources);
+  registerNewsTools(registry, news);
   const makeAgent = (channel: Channel) =>
     new Agent({ ai: groq, store: new MongoMessageStore(channel), registry, timezone: config.timezone }).respond;
 
@@ -90,10 +104,64 @@ async function main() {
       await send(chatId, text);
     });
 
+  // Daily news digest (prepared from 05:00, sent 08:00 Asia/Kolkata) and Tamil Nadu breaking-news alerts,
+  // delivered to the owner on each configured channel.
+  let digest: NewsDigestService | undefined;
+  let alerts: BreakingNewsService | undefined;
+  const owners: Record<Channel, string | undefined> = { telegram: config.telegram.ownerId, whatsapp: config.whatsapp.ownerNumber };
+  const recipients = config.news.digestChannels
+    .filter((c): c is Channel => (c === 'telegram' || c === 'whatsapp') && !!senders[c] && !!owners[c])
+    .map((channel) => ({ channel, chatId: owners[channel]! }));
+  const notify = async (channel: Channel, chatId: string, text: string) => {
+    await senders[channel]!(chatId, text);
+  };
+  if (!recipients.length) {
+    logger.warn('News digest/alerts have no usable recipient (channel not configured or owner id missing)');
+  } else {
+    const jobs = new MongoJobRunRepo();
+    if (config.news.digestEnabled) {
+      digest = new NewsDigestService({
+        repo: jobs,
+        news,
+        ai: groq,
+        recipients,
+        timezone: config.timezone,
+        prepareTime: config.news.prepareTime,
+        sendTime: config.news.digestTime,
+        notify,
+      });
+      logger.info(
+        { prepare: config.news.prepareTime, send: config.news.digestTime, channels: recipients.map((r) => r.channel) },
+        'Daily news digest scheduled',
+      );
+    }
+    if (config.news.alertsEnabled) {
+      alerts = new BreakingNewsService({
+        feeds: [THE_HINDU_TN(), googleNewsFeed('Tamil Nadu when:3h')],
+        ai: groq,
+        seen: new MongoSeenRepo(),
+        jobs,
+        notify,
+        recipients,
+        timezone: config.timezone,
+        intervalMin: config.news.alertIntervalMin,
+        maxPerDay: config.news.alertMaxPerDay,
+      });
+      logger.info({ everyMin: config.news.alertIntervalMin, maxPerDay: config.news.alertMaxPerDay }, 'Tamil Nadu breaking-news alerts enabled');
+    }
+  }
+
+  // One tick of all scheduled work. Called by the in-process poller and by POST /jobs/tick.
+  const runScheduled = async () => ({
+    reminders: await dispatchReminders(),
+    digest: digest ? await digest.runDue() : 'disabled',
+    alerts: alerts ? await alerts.runDue() : 'disabled',
+  });
+
   // External scheduler hook (Catalyst Job Scheduling / cron calls this); reminders live in MongoDB,
   // so a restart never loses them.
   if (config.jobsSecret) {
-    extraRouters.push(jobsRouter({ secret: config.jobsSecret, run: dispatchReminders }));
+    extraRouters.push(jobsRouter({ secret: config.jobsSecret, run: runScheduled }));
     logger.info('Job endpoint enabled at POST /jobs/tick');
   } else {
     logger.warn('JOBS_SECRET not set: /jobs/tick disabled');
@@ -106,7 +174,7 @@ async function main() {
 
   // In-process poller: low-latency delivery while the instance is awake. Safe alongside /jobs/tick
   // because reminder claims are atomic.
-  const stopDispatcher = startDispatcher(dispatchReminders, 15_000);
+  const stopDispatcher = startDispatcher(runScheduled, 15_000);
 
   // Register the Telegram webhook on boot (idempotent) when a public URL is known.
   if (tgClient && tg.webhookSecret && config.publicBaseUrl) {

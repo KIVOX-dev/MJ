@@ -55,3 +55,11 @@ export function resolveLocalDateTime(day: string, time: string, now: Date, tz: s
   }
   return zonedToUtc(y, m, d, Number(tm[1]), Number(tm[2]), tz);
 }
+
+/** Local calendar date in `tz` plus minutes since local midnight. */
+export function localClock(at: Date, tz: string): { y: number; m: number; d: number; minutes: number } {
+  const { y, m, d } = localDate(at, tz);
+  const parts = new Intl.DateTimeFormat('en-US', { timeZone: tz, hourCycle: 'h23', hour: '2-digit', minute: '2-digit' }).formatToParts(at);
+  const g = (t: string) => Number(parts.find((p) => p.type === t)!.value);
+  return { y, m, d, minutes: g('hour') * 60 + g('minute') };
+}
