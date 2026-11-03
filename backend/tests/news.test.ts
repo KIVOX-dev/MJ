@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { NewsDigestService } from '../src/modules/personal-secretary/briefing/news-digest.service';
+import { NewsDigestService, renderDigest } from '../src/modules/personal-secretary/briefing/news-digest.service';
 import { BreakingNewsService, parseAlerts } from '../src/modules/research-assistant/web-search/breaking-news.service';
 import { CompositeNewsSource, GoogleNewsSource, parseRss } from '../src/modules/research-assistant/web-search/rss';
 import { NewsdataClient, type Article } from '../src/modules/research-assistant/web-search/newsdata.client';
@@ -44,7 +44,7 @@ describe('NewsDigestService', () => {
   function setup() {
     const clock = { t: ist('04:59') };
     const news = { search: vi.fn().mockResolvedValue([article('Cabinet approves new scheme', 30, clock.t)]) };
-    const ai = { complete: vi.fn().mockResolvedValue('Tamil Nadu - Politics\n• Scheme approved (The Hindu)') };
+    const ai = { complete: vi.fn().mockResolvedValue('## Tamil Nadu - Politics\n• Scheme approved (The Hindu)') };
     const notify = vi.fn().mockResolvedValue(undefined);
     const repo = fakeJobs();
     const svc = new NewsDigestService({
@@ -77,7 +77,8 @@ describe('NewsDigestService', () => {
     expect((await svc.runDue()).sent).toBe(1);
     expect(ai.complete).toHaveBeenCalledTimes(1); // sent the prepared text
     expect(notify.mock.calls[0]![2]).toContain('Good morning, Sir');
-    expect(notify.mock.calls[0]![2]).toContain('example.com');
+    expect(notify.mock.calls[0]![2]).toContain('• Scheme approved (The Hindu)');
+    expect(notify.mock.calls[0]![2]).not.toMatch(/https?:/); // messages only, no links
 
     clock.t = ist('08:05');
     expect((await svc.runDue()).sent).toBe(0); // never twice
@@ -116,6 +117,25 @@ describe('NewsDigestService', () => {
   });
 });
 
+describe('renderDigest', () => {
+  it('lays out every section in order with clean bullets, filling gaps and stripping markdown', () => {
+    const out = renderDigest(
+      '## India - Sports\n- **Team wins** (ESPN)\n* Second line (BBC)\n## Tamil Nadu - Politics\n• Budget tabled (The Hindu)',
+      'Wednesday, 4 November 2026',
+    );
+    const lines = out.split('\n');
+    expect(lines[0]).toBe('📰  Good morning, Sir');
+    expect(out.indexOf('TAMIL NADU · POLITICS')).toBeLessThan(out.indexOf('INDIA · SPORTS'));
+    expect(out).toContain('• Budget tabled (The Hindu)');
+    expect(out).toContain('• Team wins (ESPN)');
+    expect(out).not.toContain('**');
+    expect(out).toContain('WORLD · SPORTS\n• No fresh updates found.'); // section the model skipped
+  });
+  it('shows "no fresh updates" everywhere if the model ignores the format', () => {
+    expect((renderDigest('random prose', 'x').match(/No fresh updates found/g) ?? []).length).toBe(6);
+  });
+});
+
 // ---- breaking alerts -----------------------------------------------------------------------
 describe('BreakingNewsService', () => {
   function setup(items: (now: Date) => Article[], aiReply = '{"alerts":[{"n":1,"headline":"CM announces cyclone relief"}]}') {
@@ -143,7 +163,8 @@ describe('BreakingNewsService', () => {
     const { svc, clock, notify, ai } = setup((n) => [article('Cyclone warning for coastal TN', 20, n)]);
     expect(await svc.runDue()).toEqual({ alerts: 1 });
     expect(notify.mock.calls[0]![2]).toContain('CM announces cyclone relief');
-    expect(notify.mock.calls[0]![2]).toContain('https://example.com/');
+    expect(notify.mock.calls[0]![2]).toContain('TAMIL NADU ALERT');
+    expect(notify.mock.calls[0]![2]).not.toMatch(/https?:/); // messages only, no links
     // next interval slot: same headline is not repeated and the model is not even asked again
     clock.t = ist('10:10');
     await svc.runDue();

@@ -109,7 +109,7 @@ export class BreakingNewsService {
         { role: 'system', content: CLASSIFY_PROMPT },
         { role: 'user', content: listing },
       ],
-      { temperature: 0, maxTokens: 800 },
+      { temperature: 0, maxTokens: 3000 },
     );
     const picked = parseAlerts(raw, items.length).slice(0, Math.min(this.d.maxPerRun ?? 3, remaining));
 
@@ -117,7 +117,7 @@ export class BreakingNewsService {
     const alertedKeys = new Set<string>();
     for (const p of picked) {
       const [k, a] = items[p.n - 1]!;
-      const text = `🚨 Tamil Nadu alert, Sir:\n${p.headline}\n(${a.source})\n${a.link}`;
+      const text = `🚨  TAMIL NADU ALERT\n\n${p.headline}\n\n— ${a.source}`;
       for (const r of this.d.recipients) await this.d.notify(r.channel, r.chatId, text);
       await this.d.seen.mark(KIND, [k], true); // mark right after delivery so a later failure cannot cause a repeat
       alertedKeys.add(k);

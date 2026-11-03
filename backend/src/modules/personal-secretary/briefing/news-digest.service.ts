@@ -27,23 +27,45 @@ export interface DigestDeps {
   now?: () => Date;
 }
 
-const SECTIONS: Array<{ title: string; region: Region; category: 'politics' | 'sports' }> = [
-  { title: 'Tamil Nadu - Politics', region: 'tamil_nadu', category: 'politics' },
-  { title: 'Tamil Nadu - Sports', region: 'tamil_nadu', category: 'sports' },
-  { title: 'India - Politics', region: 'india', category: 'politics' },
-  { title: 'India - Sports', region: 'india', category: 'sports' },
-  { title: 'World - Politics', region: 'world', category: 'politics' },
-  { title: 'World - Sports', region: 'world', category: 'sports' },
+const SECTIONS: Array<{ title: string; header: string; region: Region; category: 'politics' | 'sports' }> = [
+  { title: 'Tamil Nadu - Politics', header: '🏛  TAMIL NADU · POLITICS', region: 'tamil_nadu', category: 'politics' },
+  { title: 'Tamil Nadu - Sports', header: '🏅  TAMIL NADU · SPORTS', region: 'tamil_nadu', category: 'sports' },
+  { title: 'India - Politics', header: '🇮🇳  INDIA · POLITICS', region: 'india', category: 'politics' },
+  { title: 'India - Sports', header: '🏏  INDIA · SPORTS', region: 'india', category: 'sports' },
+  { title: 'World - Politics', header: '🌍  WORLD · POLITICS', region: 'world', category: 'politics' },
+  { title: 'World - Sports', header: '⚽  WORLD · SPORTS', region: 'world', category: 'sports' },
 ];
 
 const SUMMARY_PROMPT =
   'You write the morning news briefing for "Sir", a busy professional in Tamil Nadu, India. ' +
   'Use ONLY the articles provided. Do not add facts, names, numbers or background that are not in them. ' +
-  'Some articles may be in Tamil or off-topic: use Tamil ones (write the summary in English) and silently skip ' +
-  'any article that is not clearly about its section. For each section write 2 to 3 short bullet lines starting ' +
-  'with "• ", each ending with the source name in brackets, e.g. (The Hindu). If a section has no usable article, ' +
-  'write "• No fresh updates found." Keep the section titles exactly as given, each on its own line, with a blank ' +
-  'line between sections. Plain text only: no markdown, no asterisks. Keep the whole briefing under 2600 characters.';
+  'Some articles may be in Tamil or off-topic: use Tamil ones (write in English) and silently skip any article ' +
+  'that is not clearly about its section. Output format, exactly: for each section a line "## <section title exactly ' +
+  'as given>" followed by 2 or 3 bullet lines. Each bullet starts with "• ", is ONE short sentence of at most 140 ' +
+  'characters, and ends with the source name in brackets, e.g. (The Hindu). If a section has no usable article write ' +
+  'a single bullet "• No fresh updates found." No links, no markdown, no asterisks, no intro or closing text.';
+
+/** Turns the model's "## title" + bullets output into a clean, consistently formatted message. */
+export function renderDigest(body: string, date: string): string {
+  const bySection = new Map<string, string[]>();
+  let current: string | undefined;
+  for (const raw of body.split('\n')) {
+    const line = raw.trim();
+    const h = /^#{1,3}\s*(.+)$/.exec(line);
+    if (h) {
+      current = h[1]!.replace(/\*+/g, '').trim().toLowerCase();
+      bySection.set(current, []);
+      continue;
+    }
+    const bullet = /^[•\-*]\s*(.+)$/.exec(line);
+    if (current && bullet) bySection.get(current)!.push(bullet[1]!.replace(/\*+/g, '').trim());
+  }
+  const parts = SECTIONS.map((s) => {
+    const bullets = (bySection.get(s.title.toLowerCase()) ?? []).filter(Boolean).slice(0, 3);
+    return `${s.header}\n${(bullets.length ? bullets : ['No fresh updates found.']).map((b) => `• ${b}`).join('\n')}`;
+  });
+  return `📰  Good morning, Sir\n${date}\n\n${parts.join('\n\n')}`;
+}
 
 const hm = (t: string) => t.split(':').map(Number) as [number, number];
 
@@ -151,19 +173,11 @@ export class NewsDigestService {
         { role: 'system', content: SUMMARY_PROMPT },
         { role: 'user', content: material },
       ],
-      { temperature: 0.2, maxTokens: 1500 },
+      { temperature: 0.2, maxTokens: 4500 },
     );
 
     const date = now.toLocaleDateString('en-IN', { timeZone: this.d.timezone, weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
-    // Links come straight from the sources, never from the model. Google News redirect links are ~500
-    // characters each, so only short direct links are listed (every bullet already names its source).
-    const links = sections
-      .map((s) => ({ title: s.title, items: s.articles.filter((a) => a.link.length <= 200).slice(0, 2) }))
-      .filter((s) => s.items.length)
-      .map((s) => `${s.title}\n` + s.items.map((a) => `- ${a.title.slice(0, 70)}\n  ${a.link}`).join('\n'))
-      .join('\n\n');
-    const sourcesBlock = links ? `\n\nLinks:\n\n${links}` : '';
-
-    return `Good morning, Sir. Your news briefing for ${date}\n\n${body}${sourcesBlock}`;
+    // Messages only, no links (by request). The layout is built in code so it is always clean.
+    return renderDigest(body, date);
   }
 }
