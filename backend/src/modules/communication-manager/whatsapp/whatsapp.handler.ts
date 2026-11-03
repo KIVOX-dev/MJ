@@ -1,5 +1,5 @@
 import { logger } from '../../../utils/logger';
-import { generateReply, type Completer } from '../../../core/orchestrator/assistant';
+import type { Responder } from '../../../core/orchestrator/assistant';
 import type { MessageStore } from '../../../core/memory/message.store';
 import { digitsOnly } from './signature';
 import type { WhatsAppSender } from './whatsapp.client';
@@ -7,7 +7,7 @@ import type { WhatsAppSender } from './whatsapp.client';
 export interface HandlerDeps {
   ownerNumber: string;
   store: MessageStore;
-  ai: Completer;
+  respond: Responder;
   sender: WhatsAppSender;
 }
 
@@ -57,7 +57,7 @@ export async function processWebhook(payload: unknown, deps: HandlerDeps): Promi
         continue;
       }
 
-      const reply = await generateReply(deps.store, deps.ai, text);
+      const reply = await deps.respond(text, { channel: 'whatsapp', chatId: msg.from });
       const sent = await deps.sender.sendText(msg.from, reply);
       await deps.store.saveOutbound(sent.messageId, msg.from, reply);
     } catch (err) {

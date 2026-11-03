@@ -33,10 +33,10 @@ function memoryStore(): MessageStore & { seen: Set<string> } {
 
 function setup() {
   const sender = { sendText: vi.fn().mockResolvedValue({ messageId: 'out1' }) };
-  const ai = { complete: vi.fn().mockResolvedValue('Very well, Sir.') };
-  const deps = { verifyToken: 'vt', appSecret: SECRET, ownerNumber: OWNER, store: memoryStore(), ai, sender };
+  const respond = vi.fn().mockResolvedValue('Very well, Sir.');
+  const deps = { verifyToken: 'vt', appSecret: SECRET, ownerNumber: OWNER, store: memoryStore(), respond, sender };
   const app = createApp({ isDbConnected: () => true, extraRouters: [whatsappRouter({ verifyToken: 'vt', messaging: deps })] });
-  return { app, sender, ai, deps };
+  return { app, sender, respond, deps };
 }
 const tick = () => new Promise((r) => setTimeout(r, 20));
 
@@ -94,23 +94,23 @@ describe('webhook messages (POST)', () => {
   });
 
   it('replies to the owner via the AI and sends the reply', async () => {
-    const { app, sender, ai } = setup();
+    const { app, sender, respond } = setup();
     const body = payload(OWNER, 'm2', 'what is on today?');
     const res = await request(app).post('/webhook/whatsapp').set('Content-Type', 'application/json')
       .set('X-Hub-Signature-256', sign(body)).send(body);
     expect(res.status).toBe(200);
     await tick();
-    expect(ai.complete).toHaveBeenCalledTimes(1);
+    expect(respond).toHaveBeenCalledTimes(1);
     expect(sender.sendText).toHaveBeenCalledWith(OWNER, 'Very well, Sir.');
   });
 
   it('ignores non-owner senders', async () => {
-    const { app, sender, ai } = setup();
+    const { app, sender, respond } = setup();
     const body = payload('911111111111', 'm3');
     await request(app).post('/webhook/whatsapp').set('Content-Type', 'application/json')
       .set('X-Hub-Signature-256', sign(body)).send(body);
     await tick();
-    expect(ai.complete).not.toHaveBeenCalled();
+    expect(respond).not.toHaveBeenCalled();
     expect(sender.sendText).not.toHaveBeenCalled();
   });
 });
@@ -124,12 +124,6 @@ describe('processWebhook', () => {
     expect(sender.sendText).toHaveBeenCalledTimes(1);
   });
 
-  it('falls back to a polite message when the AI fails', async () => {
-    const { deps, sender, ai } = setup();
-    ai.complete.mockRejectedValueOnce(new Error('down'));
-    await processWebhook(JSON.parse(payload(OWNER, 'e1')), deps);
-    expect(sender.sendText).toHaveBeenCalledWith(OWNER, expect.stringContaining('Apologies'));
-  });
 
   it('fails closed when no owner is configured', async () => {
     const { deps, sender } = setup();

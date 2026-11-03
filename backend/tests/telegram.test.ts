@@ -29,9 +29,9 @@ const update = (fromId: number, id: number, text: string) => ({
 });
 function setup(ownerId = OWNER) {
   const sender = { sendText: vi.fn().mockResolvedValue({ messageId: 1 }) };
-  const ai = { complete: vi.fn().mockResolvedValue('Certainly, Sir.') };
-  const deps = { webhookSecret: SECRET, ownerId, store: memoryStore(), ai, sender };
-  return { deps, sender, ai, app: createApp({ isDbConnected: () => true, extraRouters: [telegramRouter(deps)] }) };
+  const respond = vi.fn().mockResolvedValue('Certainly, Sir.');
+  const deps = { webhookSecret: SECRET, ownerId, store: memoryStore(), respond, sender };
+  return { deps, sender, respond, app: createApp({ isDbConnected: () => true, extraRouters: [telegramRouter(deps)] }) };
 }
 const tick = () => new Promise((r) => setTimeout(r, 20));
 
@@ -46,23 +46,23 @@ describe('telegram webhook', () => {
   });
 
   it('replies to the owner', async () => {
-    const { app, sender, ai } = setup();
+    const { app, sender, respond } = setup();
     const res = await request(app).post('/webhook/telegram').set('X-Telegram-Bot-Api-Secret-Token', SECRET).send(update(555, 2, 'plan my day'));
     expect(res.status).toBe(200);
     await tick();
-    expect(ai.complete).toHaveBeenCalledTimes(1);
+    expect(respond).toHaveBeenCalledTimes(1);
     expect(sender.sendText).toHaveBeenCalledWith(555, 'Certainly, Sir.');
   });
 });
 
 describe('processTelegramUpdate', () => {
   it('ignores non-owners but answers /myid with their own id', async () => {
-    const { deps, sender, ai } = setup();
+    const { deps, sender, respond } = setup();
     await processTelegramUpdate(update(999, 3, 'hello'), deps);
     expect(sender.sendText).not.toHaveBeenCalled();
     await processTelegramUpdate(update(999, 4, '/myid'), deps);
     expect(sender.sendText).toHaveBeenCalledWith(999, 'Your Telegram user id is 999');
-    expect(ai.complete).not.toHaveBeenCalled();
+    expect(respond).not.toHaveBeenCalled();
   });
   it('fails closed when owner is not configured', async () => {
     const { deps, sender } = setup('');
@@ -74,12 +74,6 @@ describe('processTelegramUpdate', () => {
     await processTelegramUpdate(update(555, 6, 'hi'), deps);
     await processTelegramUpdate(update(555, 6, 'hi'), deps);
     expect(sender.sendText).toHaveBeenCalledTimes(1);
-  });
-  it('falls back politely when the AI fails', async () => {
-    const { deps, sender, ai } = setup();
-    ai.complete.mockRejectedValueOnce(new Error('down'));
-    await processTelegramUpdate(update(555, 7, 'hi'), deps);
-    expect(sender.sendText).toHaveBeenCalledWith(555, expect.stringContaining('Apologies'));
   });
 });
 

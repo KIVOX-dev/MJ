@@ -1,10 +1,24 @@
 import Groq from 'groq-sdk';
 import { logger } from '../../utils/logger';
 
-export type ChatRole = 'system' | 'user' | 'assistant';
+export type ChatRole = 'system' | 'user' | 'assistant' | 'tool';
+
+export interface ToolCall {
+  id: string;
+  type: 'function';
+  function: { name: string; arguments: string };
+}
+
 export interface ChatMessage {
   role: ChatRole;
-  content: string;
+  content: string | null;
+  tool_calls?: ToolCall[];
+  tool_call_id?: string;
+}
+
+export interface ToolSpec {
+  type: 'function';
+  function: { name: string; description: string; parameters: Record<string, unknown> };
 }
 
 export interface ChatClient {
@@ -15,9 +29,16 @@ export interface ChatClient {
         messages: ChatMessage[];
         temperature?: number;
         max_tokens?: number;
-      }): Promise<{ choices: Array<{ message?: { content?: string | null } }> }>;
+        tools?: ToolSpec[];
+        tool_choice?: 'auto';
+      }): Promise<{ choices: Array<{ message?: { content?: string | null; tool_calls?: ToolCall[] } }> }>;
     };
   };
+}
+
+export interface ChatResult {
+  content: string | null;
+  toolCalls: ToolCall[];
 }
 
 const RATE_LIMIT_COOLDOWN_MS = 60_000;
@@ -63,7 +84,11 @@ export class GroqService {
     return ready.length ? ready : order;
   }
 
-  async complete(messages: ChatMessage[], opts: { temperature?: number; maxTokens?: number } = {}): Promise<string> {
+  /** Chat completion that may return tool calls. */
+  async chat(
+    messages: ChatMessage[],
+    opts: { temperature?: number; maxTokens?: number; tools?: ToolSpec[] } = {},
+  ): Promise<ChatResult> {
     let lastErr: unknown;
     for (const model of this.models) {
       for (const idx of this.keyOrder()) {
@@ -73,10 +98,13 @@ export class GroqService {
             messages,
             temperature: opts.temperature ?? 0.4,
             max_tokens: opts.maxTokens ?? 1024,
+            ...(opts.tools?.length ? { tools: opts.tools, tool_choice: 'auto' as const } : {}),
           });
-          const text = res.choices[0]?.message?.content;
-          if (!text) throw new Error('Groq returned an empty completion');
-          return text.trim();
+          const m = res.choices[0]?.message;
+          const toolCalls = m?.tool_calls ?? [];
+          const content = m?.content?.trim() || null;
+          if (!content && !toolCalls.length) throw new Error('Groq returned an empty completion');
+          return { content, toolCalls };
         } catch (err) {
           lastErr = err;
           const status = statusOf(err);
@@ -88,5 +116,12 @@ export class GroqService {
       }
     }
     throw new Error(`All Groq keys/models failed (last status: ${statusOf(lastErr) ?? 'n/a'})`);
+  }
+
+  /** Plain text completion (no tools). */
+  async complete(messages: ChatMessage[], opts: { temperature?: number; maxTokens?: number } = {}): Promise<string> {
+    const r = await this.chat(messages, opts);
+    if (!r.content) throw new Error('All Groq keys/models failed (no text content)');
+    return r.content;
   }
 }

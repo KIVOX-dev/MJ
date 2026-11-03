@@ -1,5 +1,5 @@
 import { logger } from '../../../utils/logger';
-import { generateReply, type Completer } from '../../../core/orchestrator/assistant';
+import type { Responder } from '../../../core/orchestrator/assistant';
 import type { MessageStore } from '../../../core/memory/message.store';
 import type { TelegramSender } from './telegram.client';
 
@@ -7,7 +7,7 @@ export interface TelegramHandlerDeps {
   /** Numeric Telegram user id of the owner. Empty means fail closed. */
   ownerId: string;
   store: MessageStore;
-  ai: Completer;
+  respond: Responder;
   sender: TelegramSender;
 }
 
@@ -59,7 +59,7 @@ export async function processTelegramUpdate(update: TgUpdate, deps: TelegramHand
       return;
     }
 
-    const reply = await generateReply(deps.store, deps.ai, text);
+    const reply = await deps.respond(text, { channel: 'telegram', chatId: fromId });
     const sent = await deps.sender.sendText(msg.chat.id, reply);
     await deps.store.saveOutbound(`out-${sent.messageId}`, fromId, reply);
   } catch (err) {
