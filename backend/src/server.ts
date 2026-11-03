@@ -20,6 +20,8 @@ import { registerNewsTools } from './modules/research-assistant/web-search/news.
 import { NewsDigestService } from './modules/personal-secretary/briefing/news-digest.service';
 import { MongoJobRunRepo } from './jobs/job-run.repo';
 import { JobRunModel } from './models/job-run.model';
+import { renderNewspaperPdf } from './modules/personal-secretary/briefing/newspaper';
+import { sectionFeeds } from './modules/personal-secretary/briefing/section-feeds';
 import { startDispatcher } from './jobs/dispatcher';
 import { jobsRouter } from './routes/jobs.routes';
 import { WhatsAppCloudClient } from './modules/communication-manager/whatsapp/whatsapp.client';
@@ -43,8 +45,25 @@ async function main() {
   if (!config.news.apiKey) logger.warn('NEWSDATA_API_KEY not set: using Google News RSS only');
   const news = new CompositeNewsSource(newsSources);
   registerNewsTools(registry, news);
+  // Tells the assistant what already runs by itself, so it answers "when will I get breaking news?" instead of asking for details.
+  const automationNotes =
+    'AUTOMATIC FEATURES ALREADY RUNNING (the user does not need to ask for these): ' +
+    (config.news.alertsEnabled
+      ? `(1) Tamil Nadu breaking news: MJ checks live Tamil Nadu news every ${config.news.alertIntervalMin} minutes and sends an immediate alert message the moment something important appears (at most ${config.news.alertMaxPerDay} a day). `
+      : '') +
+    (config.news.digestEnabled
+      ? `(2) Every morning MJ prepares the news briefing from ${config.news.prepareTime} and sends it at ${config.news.digestTime} ${config.timezone}, together with the "MJ TIMES" newspaper as a PDF with photos. It covers Tamil Nadu, India and world politics and sports, Kollywood, Hollywood, box office and reviews. `
+      : '') +
+    'If the user asks when or whether they will get breaking news or the daily news, explain this directly and do NOT ask them for a region or topic. ' +
+    'Use the get_news tool only when the user asks for news right now on a specific topic.';
   const makeAgent = (channel: Channel) =>
-    new Agent({ ai: groq, store: new MongoMessageStore(channel), registry, timezone: config.timezone }).respond;
+    new Agent({
+      ai: groq,
+      store: new MongoMessageStore(channel),
+      registry,
+      timezone: config.timezone,
+      extraInstructions: automationNotes,
+    }).respond;
 
   const extraRouters: Router[] = [];
   const senders: Partial<Record<Channel, (to: string, text: string) => Promise<unknown>>> = {};
@@ -129,6 +148,12 @@ async function main() {
         prepareTime: config.news.prepareTime,
         sendTime: config.news.digestTime,
         notify,
+        feeds: sectionFeeds(),
+        // MJ TIMES PDF edition: only on channels that can carry files (Telegram)
+        makePdf: (payload) => renderNewspaperPdf(payload),
+        sendFile: async (channel, chatId, file) => {
+          if (channel === 'telegram' && tgClient) await tgClient.sendDocument(chatId, file.data, file.name, file.caption);
+        },
       });
       logger.info(
         { prepare: config.news.prepareTime, send: config.news.digestTime, channels: recipients.map((r) => r.channel) },

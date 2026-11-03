@@ -4,6 +4,7 @@ export interface Article {
   source: string;
   link: string;
   pubDate: string;
+  imageUrl?: string;
 }
 
 export interface NewsQuery {
@@ -37,6 +38,7 @@ interface RawArticle {
   source_id?: string;
   link?: string;
   pubDate?: string;
+  image_url?: string | null;
 }
 
 /** Newsdata.io "latest news" client (https://newsdata.io/documentation) with a small TTL cache to save credits. */
@@ -84,6 +86,7 @@ export class NewsdataClient implements NewsSource {
         source: r.source_name ?? r.source_id ?? 'unknown',
         link: r.link,
         pubDate: r.pubDate ?? '',
+        imageUrl: r.image_url && /^https?:/i.test(r.image_url) ? r.image_url : undefined,
       });
     }
     this.cache.set(key, { at: this.now(), data });

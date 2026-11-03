@@ -27,6 +27,8 @@ WORKDIR /app
 RUN apk add --no-cache tini
 COPY --from=deps  --chown=node:node /app/node_modules ./node_modules
 COPY --from=build --chown=node:node /app/dist ./dist
+# fonts for the MJ Times PDF (Anek Tamil, SIL OFL 1.1)
+COPY --chown=node:node assets ./assets
 COPY --chown=node:node package.json ./
 USER node
 EXPOSE 9000

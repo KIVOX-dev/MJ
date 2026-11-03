@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { NewsDigestService, renderDigest } from '../src/modules/personal-secretary/briefing/news-digest.service';
+import { NewsDigestService, renderDigest, splitDigest } from '../src/modules/personal-secretary/briefing/news-digest.service';
 import { BreakingNewsService, parseAlerts } from '../src/modules/research-assistant/web-search/breaking-news.service';
 import { CompositeNewsSource, GoogleNewsSource, parseRss } from '../src/modules/research-assistant/web-search/rss';
 import { NewsdataClient, type Article } from '../src/modules/research-assistant/web-search/newsdata.client';
@@ -129,10 +129,41 @@ describe('renderDigest', () => {
     expect(out).toContain('• Budget tabled (The Hindu)');
     expect(out).toContain('• Team wins (ESPN)');
     expect(out).not.toContain('**');
-    expect(out).toContain('WORLD · SPORTS\n• No fresh updates found.'); // section the model skipped
+    expect(out).not.toContain('WORLD · SPORTS'); // topic with nothing new is omitted entirely
+    expect(out).not.toMatch(/no fresh updates|no updates/i);
+    expect(out).toContain('• Team wins (ESPN)\n\n• Second line (BBC)'); // blank line between bullets
+    expect(out).toContain('──────────────'); // section dividers
   });
-  it('shows "no fresh updates" everywhere if the model ignores the format', () => {
-    expect((renderDigest('random prose', 'x').match(/No fresh updates found/g) ?? []).length).toBe(6);
+  it('includes the entertainment sections: Kollywood, Hollywood, box office, reviews', () => {
+    const out = renderDigest(
+      '## Kollywood\n• Big Tamil release opens strongly (DT Next)\n## Box Office and Trending Movies\n• Film X collects a reported figure (Sacnilk)\n## Reviews and Public Response\n• Audience praises the second half (Times of India)',
+      'x',
+    );
+    for (const h of ['🎬  KOLLYWOOD', '💰  BOX OFFICE & TRENDING MOVIES', '⭐  REVIEWS & PUBLIC RESPONSE']) expect(out).toContain(h);
+    expect(out).toContain('• Big Tamil release opens strongly (DT Next)');
+    expect(out).not.toContain('HOLLYWOOD');
+  });
+  it('drops filler bullets the model writes for empty topics, and omits those sections', () => {
+    const out = renderDigest('## Hollywood\n• No fresh updates found.\n## Kollywood\n• Real story (DT Next)', 'x');
+    expect(out).not.toContain('HOLLYWOOD');
+    expect(out).toContain('KOLLYWOOD');
+  });
+  it('says so once, plainly, if there is nothing at all', () => {
+    const out = renderDigest('random prose', 'x');
+    expect(out).toContain('No major updates on your topics this morning.');
+    expect(out).not.toContain('·');
+  });
+  it('splits long digests between sections, never inside one, each part under the limit', () => {
+    const bullets = Array.from({ length: 3 }, (_, i) => `• ${'Long bullet text '.repeat(8).trim()} ${i} (Src)`).join('\n');
+    const body = ['Tamil Nadu - Politics', 'Tamil Nadu - Sports', 'India - Politics', 'India - Sports', 'World - Politics', 'World - Sports', 'Kollywood', 'Hollywood', 'Box Office and Trending Movies', 'Reviews and Public Response']
+      .map((t) => `## ${t}\n${bullets}`)
+      .join('\n');
+    const full = renderDigest(body, 'x');
+    const parts = splitDigest(full, 1500);
+    expect(parts.length).toBeGreaterThan(1);
+    expect(parts.every((p) => p.length <= 1500)).toBe(true);
+    // every section header appears exactly once across the parts, i.e. nothing was cut in half
+    expect(parts.join('\n').match(/·|KOLLYWOOD|HOLLYWOOD|BOX OFFICE|REVIEWS/g)!.length).toBe(full.match(/·|KOLLYWOOD|HOLLYWOOD|BOX OFFICE|REVIEWS/g)!.length);
   });
 });
 

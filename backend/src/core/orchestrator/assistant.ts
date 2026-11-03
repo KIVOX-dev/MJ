@@ -23,7 +23,20 @@ export type Responder = (text: string, ctx: AgentContext) => Promise<string>;
 export const AI_FAILURE_REPLY = 'Apologies, Sir. I am unable to respond right now. Please try again shortly.';
 const MAX_STEPS = 5;
 
-function systemPrompt(now: Date, timezone: string, hasTools: boolean): string {
+/** Chat apps here show plain text: remove markdown emphasis/headings the model sometimes adds and use real bullets. */
+export function toPlainChat(text: string): string {
+  return text
+    .replace(/\*\*(.+?)\*\*/gs, '$1')
+    .replace(/__(.+?)__/gs, '$1')
+    .replace(/`([^`\n]+)`/g, '$1')
+    .replace(/^\s{0,3}#{1,6}\s*/gm, '')
+    .replace(/^\s*[-*]\s+/gm, '• ')
+    .replace(/([^\n])\n(• )/g, '$1\n\n$2') // a blank line before every bullet so items breathe
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+function systemPrompt(now: Date, timezone: string, hasTools: boolean, extra = ""): string {
   const local = now.toLocaleString('en-IN', { timeZone: timezone, dateStyle: 'full', timeStyle: 'short' });
   const day = (d: Date) => d.toLocaleDateString('en-IN', { timeZone: timezone, dateStyle: 'full' });
   const tomorrow = new Date(now.getTime() + 24 * 3600_000);
@@ -38,9 +51,12 @@ function systemPrompt(now: Date, timezone: string, hasTools: boolean): string {
       ? 'Use the provided tools to act. Only state that something was done (for example a reminder set or cancelled) ' +
         'if the tool result says ok:true, and report exactly what it returned. If a tool fails, say so honestly. ' +
         'Ask a short clarifying question if essential details (such as the time) are missing. ' +
+        'When listing news or several items, write a one-line intro, then one bullet per item starting with "• " and ' +
+        'a blank line between bullets, each as: short title, a dash, one sentence, then (Source). No markdown, no asterisks, no links. ' +
         'For relative times like "in 2 minutes" use in_minutes; for clock times pass day ("today"/"tomorrow"/YYYY-MM-DD) and time (HH:mm). '
       : '') +
-    'You can NOT yet send emails, manage the calendar or search the web; say so honestly if asked.'
+    'You can NOT yet send emails, manage the calendar or search the web; say so honestly if asked.' +
+    (extra ? `\n${extra}` : '')
   );
 }
 
@@ -55,6 +71,8 @@ export class Agent {
       store: MessageStore;
       registry: ToolRegistry;
       timezone: string;
+      /** Extra system-prompt text, e.g. which automatic features are already running. */
+      extraInstructions?: string;
       now?: () => Date;
     },
   ) {}
@@ -74,12 +92,12 @@ export class Agent {
       if (!turns.length || turns[turns.length - 1]!.content !== text) turns.push({ role: 'user', content: text });
 
       const specs = registry.specs();
-      const messages: ChatMessage[] = [{ role: 'system', content: systemPrompt(now(), timezone, specs.length > 0) }, ...turns];
+      const messages: ChatMessage[] = [{ role: 'system', content: systemPrompt(now(), timezone, specs.length > 0, this.deps.extraInstructions) }, ...turns];
       const toolCtx = { channel: ctx.channel, chatId: ctx.chatId, timezone, now };
 
       for (let step = 0; step < MAX_STEPS; step++) {
         const res = await ai.chat(messages, { tools: specs });
-        if (!res.toolCalls.length) return res.content ?? AI_FAILURE_REPLY;
+        if (!res.toolCalls.length) return res.content ? toPlainChat(res.content) : AI_FAILURE_REPLY;
 
         messages.push({ role: 'assistant', content: res.content, tool_calls: res.toolCalls });
         for (const call of res.toolCalls) {

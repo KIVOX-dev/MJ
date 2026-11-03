@@ -10,7 +10,26 @@ function tag(xml: string, name: string): string | undefined {
   return m ? m[1]!.trim() : undefined;
 }
 
-/** Minimal RSS 2.0 parser (title, link, pubDate, source, description). */
+/** Best image for an item: media:content / media:thumbnail / image enclosure / first <img> in the description. */
+function findImage(item: string, descHtml: string): string | undefined {
+  const urlOf = (tagText: string) => /\burl\s*=\s*["']([^"']+)["']/i.exec(tagText)?.[1];
+  const looksImage = (tagText: string, url: string) =>
+    /medium\s*=\s*["']image["']/i.test(tagText) || /type\s*=\s*["']image\//i.test(tagText) || /\.(jpe?g|png|webp)(\?|$)/i.test(url);
+  for (const m of item.matchAll(/<media:content\b[^>]*>/gi)) {
+    const u = urlOf(m[0]);
+    if (u && looksImage(m[0], u)) return decode(u);
+  }
+  const thumb = /<media:thumbnail\b[^>]*>/i.exec(item);
+  if (thumb && urlOf(thumb[0])) return decode(urlOf(thumb[0])!);
+  for (const m of item.matchAll(/<enclosure\b[^>]*>/gi)) {
+    const u = urlOf(m[0]);
+    if (u && looksImage(m[0], u)) return decode(u);
+  }
+  const img = /<img\b[^>]*\bsrc\s*=\s*["']([^"']+)["']/i.exec(descHtml);
+  return img ? decode(img[1]!) : undefined;
+}
+
+/** Minimal RSS 2.0 parser (title, link, pubDate, source, description, image). */
 export function parseRss(xml: string): Article[] {
   const out: Article[] = [];
   for (const m of xml.matchAll(/<item>([\s\S]*?)<\/item>/gi)) {
@@ -27,7 +46,9 @@ export function parseRss(xml: string): Article[] {
     const when = pub ? new Date(decode(unwrap(pub)).trim()) : null;
     const rawDesc = tag(item, 'description');
     const desc = rawDesc ? decode(stripHtml(decode(unwrap(rawDesc)))) : undefined;
+    const imageUrl = findImage(item, rawDesc ? decode(unwrap(rawDesc)) : '');
     out.push({
+      imageUrl,
       title,
       description: desc && desc.length > 40 && !desc.startsWith(title) ? desc.slice(0, 400) : undefined,
       source: source ?? 'unknown',
@@ -85,6 +106,23 @@ export class GoogleNewsSource implements NewsSource {
   }
 }
 
+/**
+ * Merges article lists: de-duplicates by title (keeping the freshest copy, but an image from any copy), newest first.
+ */
+export function mergeArticles(lists: Article[][], cap: number): Article[] {
+  const byTitle = new Map<string, Article>();
+  for (const a of lists.flat()) {
+    const k = a.title.toLowerCase().replace(/\W+/g, ' ').trim();
+    const prev = byTitle.get(k);
+    if (!prev) byTitle.set(k, a);
+    else {
+      const fresher = (Date.parse(a.pubDate) || 0) > (Date.parse(prev.pubDate) || 0) ? a : prev;
+      byTitle.set(k, { ...fresher, imageUrl: fresher.imageUrl ?? a.imageUrl ?? prev.imageUrl });
+    }
+  }
+  return [...byTitle.values()].sort((a, b) => (Date.parse(b.pubDate) || 0) - (Date.parse(a.pubDate) || 0)).slice(0, cap);
+}
+
 /** Merges several sources: tolerates individual failures, de-duplicates by title, newest first. */
 export class CompositeNewsSource implements NewsSource {
   constructor(private readonly sources: NewsSource[]) {}
@@ -93,15 +131,6 @@ export class CompositeNewsSource implements NewsSource {
     const settled = await Promise.allSettled(this.sources.map((s) => s.search(q)));
     const ok = settled.filter((r): r is PromiseFulfilledResult<Article[]> => r.status === 'fulfilled');
     if (!ok.length) throw new Error(`All news sources failed: ${String((settled[0] as PromiseRejectedResult).reason?.message)}`);
-    // same story from several sources: keep the freshest copy
-    const byTitle = new Map<string, Article>();
-    for (const a of ok.flatMap((r) => r.value)) {
-      const k = a.title.toLowerCase().replace(/\W+/g, ' ').trim();
-      const prev = byTitle.get(k);
-      if (!prev || (Date.parse(a.pubDate) || 0) > (Date.parse(prev.pubDate) || 0)) byTitle.set(k, a);
-    }
-    const merged = [...byTitle.values()];
-    merged.sort((a, b) => (Date.parse(b.pubDate) || 0) - (Date.parse(a.pubDate) || 0));
-    return merged.slice(0, 12);
+    return mergeArticles(ok.map((r) => r.value), 12);
   }
 }
