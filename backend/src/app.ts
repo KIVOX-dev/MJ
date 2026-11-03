@@ -3,11 +3,14 @@ import helmet from 'helmet';
 import cors from 'cors';
 import rateLimit from 'express-rate-limit';
 import { healthRouter } from './routes/health.routes';
+import type { Router } from 'express';
 import { logger } from './utils/logger';
 
 export interface AppDeps {
   isDbConnected: () => boolean;
   corsOrigins?: string[];
+  /** Mounted before the JSON parser: it needs the raw body for signature checks. */
+  extraRouters?: Router[];
 }
 
 export function createApp(deps: AppDeps) {
@@ -19,8 +22,7 @@ export function createApp(deps: AppDeps) {
   // The WhatsApp webhook is server-to-server and doesn't need CORS.
   app.use(cors({ origin: deps.corsOrigins?.length ? deps.corsOrigins : false, credentials: true }));
   app.use(rateLimit({ windowMs: 60_000, limit: 120, standardHeaders: true, legacyHeaders: false }));
-  // Note: the WhatsApp webhook (Phase 2) needs the raw body for signature
-  // verification, so it will mount its own raw parser before this one.
+  for (const r of deps.extraRouters ?? []) app.use(r);
   app.use(express.json({ limit: '1mb' }));
 
   app.use(healthRouter(deps));
