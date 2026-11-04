@@ -9,6 +9,10 @@ const reminderSchema = new Schema(
     timezone: { type: String, default: 'Asia/Kolkata' },
     status: { type: String, enum: ['pending', 'processing', 'sent', 'failed', 'cancelled'], default: 'pending' },
     attempts: { type: Number, default: 0 },
+    /** When set, the reminder repeats every N minutes until the user stops it. */
+    repeatEveryMin: { type: Number },
+    /** How many times a repeating reminder has been delivered so far. */
+    sentCount: { type: Number, default: 0 },
     lockedAt: { type: Date },
     lastError: { type: String },
     sentAt: { type: Date },

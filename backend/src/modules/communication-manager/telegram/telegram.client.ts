@@ -1,5 +1,10 @@
 export interface TelegramSender {
-  sendText(chatId: number | string, text: string): Promise<{ messageId: number }>;
+  /** `stopReminderId` adds an inline "Stop reminder" button for that reminder. */
+  sendText(chatId: number | string, text: string, opts?: { stopReminderId?: string }): Promise<{ messageId: number }>;
+  /** Acknowledges a button press (removes the spinner on the user's screen, optionally shows a toast). */
+  answerCallback?(callbackQueryId: string, text?: string): Promise<void>;
+  /** Removes the inline keyboard from a message once its button has been used. */
+  clearKeyboard?(chatId: number | string, messageId: number): Promise<void>;
 }
 
 interface TgResponse<T> {
@@ -33,10 +38,24 @@ export class TelegramBotClient implements TelegramSender {
     return json.result;
   }
 
-  async sendText(chatId: number | string, text: string): Promise<{ messageId: number }> {
+  async sendText(chatId: number | string, text: string, opts: { stopReminderId?: string } = {}): Promise<{ messageId: number }> {
     // Telegram text limit is 4096 chars
-    const r = await this.call<{ message_id: number }>('sendMessage', { chat_id: chatId, text: text.slice(0, 4000) });
+    const r = await this.call<{ message_id: number }>('sendMessage', {
+      chat_id: chatId,
+      text: text.slice(0, 4000),
+      ...(opts.stopReminderId
+        ? { reply_markup: { inline_keyboard: [[{ text: '⏹  Stop reminder', callback_data: `stop:${opts.stopReminderId}` }]] } }
+        : {}),
+    });
     return { messageId: r.message_id };
+  }
+
+  async answerCallback(callbackQueryId: string, text?: string): Promise<void> {
+    await this.call<boolean>('answerCallbackQuery', { callback_query_id: callbackQueryId, ...(text ? { text } : {}) });
+  }
+
+  async clearKeyboard(chatId: number | string, messageId: number): Promise<void> {
+    await this.call<unknown>('editMessageReplyMarkup', { chat_id: chatId, message_id: messageId, reply_markup: { inline_keyboard: [] } });
   }
 
   /** Uploads a file (e.g. the MJ Times PDF). Telegram allows up to 50 MB for bots. */
@@ -57,7 +76,7 @@ export class TelegramBotClient implements TelegramSender {
     return this.call<boolean>('setWebhook', {
       url,
       secret_token: secretToken,
-      allowed_updates: ['message'],
+      allowed_updates: ['message', 'callback_query'],
       drop_pending_updates: false,
     });
   }

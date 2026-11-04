@@ -9,10 +9,43 @@ export interface TelegramHandlerDeps {
   store: MessageStore;
   respond: Responder;
   sender: TelegramSender;
+  /** Stops a reminder when its Stop button is pressed. Returns false if it was not active any more. */
+  stopReminder?: (chatId: string, reminderId: string) => Promise<boolean>;
+}
+
+/** Handles taps on inline buttons. Only the owner may press them; everything else is ignored. */
+async function processCallback(update: TgUpdate, deps: TelegramHandlerDeps): Promise<void> {
+  const cb = update.callback_query!;
+  try {
+    const fromId = String(cb.from.id);
+    if (!deps.ownerId || fromId !== deps.ownerId) {
+      logger.warn('Ignored Telegram button press from non-owner');
+      return;
+    }
+    const m = /^stop:([a-f0-9]{24})$/i.exec(cb.data ?? '');
+    if (!m || !deps.stopReminder || !cb.message) {
+      await deps.sender.answerCallback?.(cb.id);
+      return;
+    }
+    const chatId = String(cb.message.chat.id);
+    const stopped = await deps.stopReminder(chatId, m[1]!);
+    await deps.sender.answerCallback?.(cb.id, stopped ? 'Reminder stopped' : 'Already stopped');
+    await deps.sender.clearKeyboard?.(cb.message.chat.id, cb.message.message_id).catch(() => undefined);
+    if (stopped) await deps.sender.sendText(cb.message.chat.id, 'Understood, Sir. That reminder is stopped.');
+  } catch (err) {
+    logger.error({ err: { message: (err as Error).message } }, 'Failed processing Telegram button press');
+  }
 }
 
 export interface TgUpdate {
   update_id: number;
+  /** A tap on an inline button (e.g. "Stop reminder"). */
+  callback_query?: {
+    id: string;
+    from: { id: number };
+    data?: string;
+    message?: { message_id: number; chat: { id: number } };
+  };
   message?: {
     message_id: number;
     from?: { id: number; is_bot?: boolean };
@@ -22,6 +55,7 @@ export interface TgUpdate {
 }
 
 export async function processTelegramUpdate(update: TgUpdate, deps: TelegramHandlerDeps): Promise<void> {
+  if (update?.callback_query) return processCallback(update, deps);
   const msg = update?.message;
   if (!msg?.from || msg.from.is_bot || msg.chat.type !== 'private') return;
   try {

@@ -66,7 +66,7 @@ async function main() {
     }).respond;
 
   const extraRouters: Router[] = [];
-  const senders: Partial<Record<Channel, (to: string, text: string) => Promise<unknown>>> = {};
+  const senders: Partial<Record<Channel, (to: string, text: string, opts?: { stopButtonFor?: string }) => Promise<unknown>>> = {};
 
   const wa = config.whatsapp;
   if (wa.verifyToken) {
@@ -78,7 +78,9 @@ async function main() {
         phoneNumberId: wa.phoneNumberId!,
         apiVersion: wa.apiVersion,
       });
-      senders.whatsapp = (to, text) => client.sendText(to, text);
+      senders.whatsapp = (to, text, opts) => client.sendText(to, opts?.stopButtonFor ? `${text}
+
+Reply "stop reminders" to stop these.` : text);
       messaging = {
         appSecret: wa.appSecret!,
         ownerNumber: wa.ownerNumber!,
@@ -99,7 +101,7 @@ async function main() {
   if (tg.botToken && tg.webhookSecret) {
     tgClient = new TelegramBotClient(tg.botToken);
     const client = tgClient;
-    senders.telegram = (to, text) => client.sendText(to, text);
+    senders.telegram = (to, text, opts) => client.sendText(to, text, { stopReminderId: opts?.stopButtonFor });
     extraRouters.push(
       telegramRouter({
         webhookSecret: tg.webhookSecret,
@@ -107,6 +109,7 @@ async function main() {
         store: new MongoMessageStore('telegram'),
         respond: makeAgent('telegram'),
         sender: client,
+        stopReminder: (chatId, id) => reminders.cancel('telegram', chatId, id),
       }),
     );
     if (!tg.ownerId) logger.warn('Telegram enabled but TELEGRAM_OWNER_ID is not set: send /myid to the bot to get it');
@@ -117,10 +120,10 @@ async function main() {
 
   // Delivers due reminders through whichever channel they were created on.
   const dispatchReminders = () =>
-    reminders.dispatchDue(async (channel, chatId, text) => {
+    reminders.dispatchDue(async (channel, chatId, text, opts) => {
       const send = senders[channel];
       if (!send) throw new Error(`Channel ${channel} is not configured`);
-      await send(chatId, text);
+      await send(chatId, text, opts);
     });
 
   // Daily news digest (prepared from 05:00, sent 08:00 Asia/Kolkata) and Tamil Nadu breaking-news alerts,

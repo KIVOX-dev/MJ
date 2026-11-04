@@ -26,17 +26,29 @@ function fakeRepo() {
         text: r.text,
         dueAt: r.dueAt,
         attempts: 0,
+        sentCount: 0,
+        repeatEveryMin: r.repeatEveryMin,
         status: 'pending',
         key: r.idempotencyKey,
       };
       rows.push(row);
       return row;
     },
-    listPending: async (c, id) => rows.filter((x) => x.channel === c && x.chatId === id && x.status === 'pending'),
+    listPending: async (c, id) => rows.filter((x) => x.channel === c && x.chatId === id && (x.status === 'pending' || x.status === 'processing')),
     cancel: async (c, id, rid) => {
-      const r = rows.find((x) => x.id === rid && x.channel === c && x.chatId === id && x.status === 'pending');
+      const r = rows.find((x) => x.id === rid && x.channel === c && x.chatId === id && (x.status === 'pending' || x.status === 'processing'));
       if (r) r.status = 'cancelled';
       return !!r;
+    },
+    cancelAll: async (c, id) => {
+      const active = rows.filter((x) => x.channel === c && x.chatId === id && (x.status === 'pending' || x.status === 'processing'));
+      active.forEach((x) => (x.status = 'cancelled'));
+      return active.length;
+    },
+    scheduleNext: async (id, dueAt) => {
+      const r = rows.find((x) => x.id === id)!;
+      if (r.status !== 'processing') return; // a Stop pressed mid-delivery must win
+      Object.assign(r, { status: 'pending', dueAt, attempts: 0, sentCount: r.sentCount + 1 });
     },
     claimDue: async (now) => {
       const r = rows.filter((x) => x.status === 'pending' && x.dueAt <= now).sort((a, b) => +a.dueAt - +b.dueAt)[0];
@@ -45,7 +57,10 @@ function fakeRepo() {
       r.attempts++;
       return { ...r };
     },
-    markSent: async (id) => void (rows.find((x) => x.id === id)!.status = 'sent'),
+    markSent: async (id) => {
+      const r = rows.find((x) => x.id === id)!;
+      if (r.status === 'processing') r.status = 'sent';
+    },
     reschedule: async (id, dueAt) => {
       const r = rows.find((x) => x.id === id)!;
       r.status = 'pending';
@@ -75,7 +90,7 @@ describe('ToolRegistry', () => {
   it('exposes JSON-schema specs for the reminder tools', () => {
     const { registry } = setup();
     const specs = registry.specs();
-    expect(specs.map((s) => s.function.name)).toEqual(['create_reminder', 'list_reminders', 'cancel_reminder']);
+    expect(specs.map((s) => s.function.name)).toEqual(['create_reminder', 'list_reminders', 'cancel_reminder', 'cancel_all_reminders']);
     expect(specs[0]!.function.parameters).toHaveProperty('properties');
   });
   it('rejects unknown tools and bad arguments without throwing', async () => {
