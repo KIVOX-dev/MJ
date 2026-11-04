@@ -36,6 +36,16 @@ export function toPlainChat(text: string): string {
     .trim();
 }
 
+const LOWERCASE_OK = new Set(['here', 'there', 'the', 'your', 'you', 'it', 'no', 'yes', 'this', 'that', 'these', 'those', 'today', 'tomorrow', 'currently', 'unfortunately', 'certainly', 'sure', 'please', 'of', 'we', 'a', 'an', 'all', 'some', 'there']);
+
+/** Safety net: every reply addresses the user as "Sir" (the persona rule), even list answers where the model forgets. */
+export function addressSir(text: string): string {
+  if (/\bsir\b/i.test(text)) return text;
+  const first = /^[A-Za-z]+/.exec(text)?.[0];
+  const rest = first && LOWERCASE_OK.has(first.toLowerCase()) && first !== 'I' ? text[0]!.toLowerCase() + text.slice(1) : text;
+  return `Sir, ${rest}`;
+}
+
 function systemPrompt(now: Date, timezone: string, hasTools: boolean, extra = ""): string {
   const local = now.toLocaleString('en-IN', { timeZone: timezone, dateStyle: 'full', timeStyle: 'short' });
   const day = (d: Date) => d.toLocaleDateString('en-IN', { timeZone: timezone, dateStyle: 'full' });
@@ -44,7 +54,8 @@ function systemPrompt(now: Date, timezone: string, hasTools: boolean, extra = ""
     'You are MJ, a personal AI assistant (secretary, communication manager and research assistant) ' +
     'working for one user, whom you address as "Sir" where appropriate. Be concise, respectful and professional. ' +
     'Reply in the language the user writes in (English or Tamil). You are replying in a chat app, so keep ' +
-    'answers short and use plain text only (no markdown, no asterisks).\n' +
+    'answers short and use plain text only (no markdown, no asterisks). ALWAYS address the user as "Sir" in the first ' +
+    'sentence of every reply, including replies that are lists (for example "Sir, here are the latest headlines:").\n' +
     `Current time: ${local} (${timezone}); UTC ISO: ${now.toISOString()}.\n` +
     `Today is ${day(now)}. Tomorrow is ${day(tomorrow)}. "Tomorrow" ALWAYS means that next calendar day, even if it is currently early morning.\n` +
     (hasTools
@@ -97,7 +108,7 @@ export class Agent {
 
       for (let step = 0; step < MAX_STEPS; step++) {
         const res = await ai.chat(messages, { tools: specs });
-        if (!res.toolCalls.length) return res.content ? toPlainChat(res.content) : AI_FAILURE_REPLY;
+        if (!res.toolCalls.length) return res.content ? addressSir(toPlainChat(res.content)) : AI_FAILURE_REPLY;
 
         messages.push({ role: 'assistant', content: res.content, tool_calls: res.toolCalls });
         for (const call of res.toolCalls) {

@@ -6,7 +6,7 @@ import { NewsDigestService, parseBody, SECTION_TITLES } from '../src/modules/per
 import { fetchImage, isPublicHttpUrl } from '../src/utils/image';
 import { mergeArticles, parseRss } from '../src/modules/research-assistant/web-search/rss';
 import type { Article } from '../src/modules/research-assistant/web-search/newsdata.client';
-import { Agent, toPlainChat } from '../src/core/orchestrator/assistant';
+import { Agent, addressSir, toPlainChat } from '../src/core/orchestrator/assistant';
 import { ToolRegistry } from '../src/core/tool-registry';
 import { TelegramBotClient } from '../src/modules/communication-manager/telegram/telegram.client';
 import type { JobRunRepo } from '../src/jobs/job-run.repo';
@@ -192,8 +192,23 @@ describe('plain chat replies and automation awareness', () => {
       extraInstructions: 'AUTOMATIC FEATURES: Tamil Nadu alerts every 10 minutes.',
     });
     const out = await agent.reply('When will I get breaking news?', { channel: 'telegram', chatId: '1' });
-    expect(out).toBe('You will get alerts automatically.');
+    expect(out).toBe('Sir, you will get alerts automatically.');
     expect(chat.mock.calls[0]![0][0].content).toContain('AUTOMATIC FEATURES: Tamil Nadu alerts every 10 minutes.');
+  });
+});
+
+describe('addressSir', () => {
+  it('adds "Sir" when missing, keeps proper nouns capitalised, leaves replies that already have it', () => {
+    expect(addressSir('Here are the latest headlines:\n\n• One')).toBe('Sir, here are the latest headlines:\n\n• One');
+    expect(addressSir('Tamil Nadu has issued a cyclone warning.')).toBe('Sir, Tamil Nadu has issued a cyclone warning.');
+    expect(addressSir('I could not find that.')).toBe('Sir, I could not find that.');
+    expect(addressSir('Certainly, Sir. Done.')).toBe('Certainly, Sir. Done.');
+    expect(addressSir('Hello Sir!')).toBe('Hello Sir!');
+  });
+  it('is applied to every final agent reply', async () => {
+    const chat = vi.fn().mockResolvedValue({ content: 'Here are the latest headlines:\n- One\n- Two', toolCalls: [] });
+    const agent = new Agent({ ai: { chat }, registry: new ToolRegistry(), timezone: 'Asia/Kolkata', store: { claimInbound: async () => true, saveOutbound: async () => {}, recent: async () => [] } });
+    expect(await agent.reply('news', { channel: 'telegram', chatId: '1' })).toBe('Sir, here are the latest headlines:\n\n• One\n\n• Two');
   });
 });
 
