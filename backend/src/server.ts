@@ -123,6 +123,11 @@ Reply "stop reminders" to stop these.` : text);
         respond: makeAgent('telegram'),
         sender: client,
         stopReminder: (chatId, id) => reminders.cancel('telegram', chatId, id),
+        sendNewspaper: async (chatId) => {
+          if (!digest) throw new Error('the daily newspaper is switched off');
+          const file = await digest.newspaperNow();
+          await client.sendDocument(chatId, file.data, file.name, file.caption);
+        },
       }),
     );
     if (!tg.ownerId) logger.warn('Telegram enabled but TELEGRAM_OWNER_ID is not set: send /myid to the bot to get it');

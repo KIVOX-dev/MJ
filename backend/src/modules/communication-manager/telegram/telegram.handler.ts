@@ -12,6 +12,8 @@ export interface TelegramHandlerDeps {
   sender: TelegramSender;
   /** Stops a reminder when its Stop button is pressed. Returns false if it was not active any more. */
   stopReminder?: (chatId: string, reminderId: string) => Promise<boolean>;
+  /** Builds and sends today's MJ TIMES PDF to the chat. Throws if it cannot. */
+  sendNewspaper?: (chatId: number) => Promise<void>;
 }
 
 /** Handles taps on inline buttons. Only the owner may press them; everything else is ignored. */
@@ -177,6 +179,18 @@ export async function processTelegramUpdate(update: TgUpdate, deps: TelegramHand
     }
     if (text === '/start') {
       await deps.sender.sendText(msg.chat.id, 'Good day, Sir. MJ at your service. How may I help?');
+      return;
+    }
+
+    // "Pdf ??", "send the newspaper": deliver today's MJ TIMES directly instead of asking the model.
+    if (deps.sendNewspaper && text.length <= 60 && /\b(pdf|newspaper|mj times|e-?paper)\b/i.test(text)) {
+      try {
+        await deps.sender.sendText(msg.chat.id, 'One moment, Sir. Preparing today\'s MJ TIMES.');
+        await deps.sendNewspaper(msg.chat.id);
+      } catch (err) {
+        logger.warn({ err: { message: (err as Error).message } }, 'On-demand MJ Times failed');
+        await deps.sender.sendText(msg.chat.id, `Apologies, Sir. I could not produce the newspaper: ${(err as Error).message}.`.replace('..', '.'));
+      }
       return;
     }
 

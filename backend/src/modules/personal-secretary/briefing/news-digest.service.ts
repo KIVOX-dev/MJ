@@ -269,6 +269,27 @@ export class NewsDigestService {
     }
   }
 
+  /** Today's MJ TIMES PDF on demand (reuses the prepared digest, builds one if none exists yet). Throws on failure. */
+  async newspaperNow(): Promise<DigestFile> {
+    if (!this.d.makePdf) throw new Error('The newspaper is not enabled');
+    const now = this.now;
+    const c = localClock(now, this.d.timezone);
+    const dateKey = `${c.y}-${String(c.m).padStart(2, '0')}-${String(c.d).padStart(2, '0')}`;
+    const prepKey = `news-digest-prep:${dateKey}`;
+    let payload = this.prepared?.key === prepKey ? this.prepared.payload : undefined;
+    if (!payload) {
+      const stored = await this.d.repo.getPayload(prepKey);
+      if (stored) payload = parsePayload(stored);
+    }
+    if (!payload?.sections.some((s) => s.stories.length)) {
+      payload = await this.buildDigest(now);
+      this.prepared = { key: prepKey, payload };
+    }
+    if (!payload.sections.some((s) => s.stories.length)) throw new Error('There are no stories to print yet');
+    if (this.pdf?.key !== dateKey) this.pdf = { key: dateKey, data: await this.d.makePdf(payload) };
+    return { name: `MJ-Times-${dateKey}.pdf`, data: this.pdf.data, caption: `MJ TIMES · ${payload.date}` };
+  }
+
   /** Text-only convenience (used by previews and scripts). */
   async build(now: Date = this.now): Promise<string> {
     return (await this.buildDigest(now)).text;
