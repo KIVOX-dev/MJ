@@ -71,3 +71,12 @@ describe('GroqService', () => {
     expect(create).toHaveBeenLastCalledWith(expect.objectContaining({ model: 'backup' }));
   });
 });
+
+describe('/health features', () => {
+  it('lists feature flags only when provided', async () => {
+    const withF = await request(createApp({ isDbConnected: () => true, features: () => ({ email: true, webChat: false }) })).get('/health');
+    expect(withF.body.features).toEqual({ email: true, webChat: false });
+    const without = await request(createApp({ isDbConnected: () => true })).get('/health');
+    expect(without.body.features).toBeUndefined();
+  });
+});

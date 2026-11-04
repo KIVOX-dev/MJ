@@ -8,6 +8,8 @@ import { logger } from './utils/logger';
 
 export interface AppDeps {
   isDbConnected: () => boolean;
+  /** Shown on /health so a deploy can be verified from outside: which optional features are on. */
+  features?: () => Record<string, boolean>;
   corsOrigins?: string[];
   /** Mounted before the JSON parser: it needs the raw body for signature checks. */
   extraRouters?: Router[];

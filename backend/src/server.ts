@@ -234,7 +234,19 @@ Reply "stop reminders" to stop these.` : text);
     logger.warn('JOBS_SECRET not set: /jobs/tick disabled');
   }
 
-  const app = createApp({ isDbConnected: isDatabaseConnected, corsOrigins: config.corsOrigins, extraRouters });
+  const app = createApp({
+    isDbConnected: isDatabaseConnected,
+    corsOrigins: config.corsOrigins,
+    extraRouters,
+    features: () => ({
+      email: registry.has('email_me'),
+      webChat: !!(config.webApiToken && tg.ownerId),
+      telegram: !!tgClient,
+      crawlit: !!crawlit,
+      newsDigest: !!digest,
+      newsAlerts: !!alerts,
+    }),
+  });
   const server = app.listen(config.port, () => {
     logger.info({ port: config.port, env: config.env }, 'MJ server listening');
   });
