@@ -31,13 +31,16 @@ export interface BreakingDeps {
 const KIND = 'tn-alert';
 
 const CLASSIFY_PROMPT =
-  'You screen Tamil Nadu news for urgent alerts for one reader. From the numbered headlines pick ONLY those that are ' +
-  'genuinely breaking or highly significant for people in Tamil Nadu: major government or Chief Minister decisions or ' +
-  'announcements, political upheaval or elections, arrests or cases against prominent people, major accidents, ' +
-  'disasters, deaths, cyclone/flood/weather warnings, serious law-and-order incidents, major court verdicts. ' +
-  'Ignore routine or procedural updates (ordinary court hearings, routine inquiries, scheme announcements), opinion, ' +
-  'explainers, trackers and study-material or coaching sites, features, entertainment, promotions and minor sports. ' +
-  'Be strict: alert only when a reasonable reader would want to be interrupted right now. When in doubt, do NOT alert. Choosing none is the normal outcome. ' +
+  'You screen Tamil Nadu news for one reader who wants to be kept well informed through the day. From the numbered ' +
+  'headlines pick the items that are genuinely newsworthy for people in Tamil Nadu: government or Chief Minister decisions ' +
+  'and announcements, politics (party moves, alliances, elections, statements by leaders), arrests, cases and investigations ' +
+  'involving notable people, court verdicts and important orders, accidents, crimes, disasters, deaths of notable people, ' +
+  'weather and rain/cyclone/flood warnings, transport or power disruptions, major local incidents, important business or ' +
+  'jobs news, and big Tamil cinema or sports news. ' +
+  'Skip only content that is clearly low value: opinion pieces, explainers, trackers, study-material or coaching sites, ' +
+  'lifestyle features, promotions, astrology, listicles and routine procedural notices. ' +
+  'When several headlines cover the same event choose only the best one. When real news is flowing, picking 2 to 5 items is normal; ' +
+  'pick none only if everything is clearly low value. ' +
   'For each chosen item write a one-line plain-English headline (max 180 characters) using ONLY facts in that item. ' +
   'Reply with JSON only, no other text: {"alerts":[{"n":1,"headline":"..."}]}';
 
@@ -95,7 +98,7 @@ export class BreakingNewsService {
     // daily cap so a busy news day cannot flood the chat
     const clock = localClock(now, this.d.timezone);
     const dayStart = zonedToUtc(clock.y, clock.m, clock.d, 0, 0, this.d.timezone);
-    const remaining = (this.d.maxPerDay ?? 15) - (await this.d.seen.alertedCountSince(KIND, dayStart));
+    const remaining = (this.d.maxPerDay ?? 30) - (await this.d.seen.alertedCountSince(KIND, dayStart));
     if (remaining <= 0) {
       await this.d.seen.mark(KIND, items.map(([k]) => k), false);
       return 0;
@@ -111,7 +114,7 @@ export class BreakingNewsService {
       ],
       { temperature: 0, maxTokens: 3000 },
     );
-    const picked = parseAlerts(raw, items.length).slice(0, Math.min(this.d.maxPerRun ?? 3, remaining));
+    const picked = parseAlerts(raw, items.length).slice(0, Math.min(this.d.maxPerRun ?? 5, remaining));
 
     // If classification failed to parse we threw above, so nothing was marked seen and the next slot retries.
     const alertedKeys = new Set<string>();

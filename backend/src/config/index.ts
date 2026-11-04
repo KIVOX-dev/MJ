@@ -30,7 +30,7 @@ const schema = z.object({
   NEWS_DIGEST_PREPARE_TIME: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, 'must be HH:mm').default('05:00'),
   NEWS_ALERTS_ENABLED: z.enum(['true', 'false']).default('true'),
   NEWS_ALERT_INTERVAL_MIN: z.coerce.number().int().min(2).max(120).default(10),
-  NEWS_ALERT_MAX_PER_DAY: z.coerce.number().int().min(1).max(100).default(15),
+  NEWS_ALERT_MAX_PER_DAY: z.coerce.number().int().min(1).max(100).default(30),
   NEWS_DIGEST_TIME: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, 'must be HH:mm').default('08:00'),
   NEWS_DIGEST_CHANNELS: z.string().default('telegram'),
   CORS_ORIGINS: z.string().default(''),

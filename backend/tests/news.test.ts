@@ -228,7 +228,7 @@ describe('BreakingNewsService', () => {
     const notify = vi.fn();
     const svc = new BreakingNewsService({
       feeds: [{ fetch: async () => [article('Big news', 5, clock.t)] }], ai, seen, jobs: fakeJobs(), notify,
-      recipients: [{ channel: 'telegram', chatId: '7' }], timezone: 'Asia/Kolkata', intervalMin: 10, now: () => clock.t,
+      recipients: [{ channel: 'telegram', chatId: '7' }], timezone: 'Asia/Kolkata', intervalMin: 10, maxPerDay: 15, now: () => clock.t,
     });
     await svc.runDue();
     expect(ai.complete).not.toHaveBeenCalled();
