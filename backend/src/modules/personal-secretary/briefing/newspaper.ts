@@ -13,7 +13,7 @@ export interface NewspaperDeps {
 
 const INK = '#141414';
 const MUTED = '#6b6b6b';
-const ACCENT = '#8b1a1a';
+const ACCENT = '#1f3a8a'; // blue (the paper uses only blue and black)
 const RULE = '#b9b9b9';
 const PAGE_W = 595.28;
 const PAGE_H = 841.89;
@@ -133,7 +133,7 @@ export async function renderNewspaperPdf(payload: DigestPayload, deps: Newspaper
   let y = 26;
   doc.font('xb').fontSize(78).fillColor(NAVY).text('MJ TIMES', M, y, { width: W, align: 'center', characterSpacing: 3, lineBreak: false });
   y += 84;
-  doc.save().rect(M, y, W, 8).fill(ACCENT).restore();
+  doc.save().rect(M, y, W, 8).fill(INK).restore();
   y += 17;
   doc.font('xb').fontSize(11.5).fillColor(INK).text("YOUR MORNING NEWS BRIEFING  ·  TAMIL NADU  ·  INDIA  ·  WORLD  ·  CINEMA", M, y, { width: W, align: 'center', characterSpacing: 1.6, lineBreak: false });
   y += 18;
