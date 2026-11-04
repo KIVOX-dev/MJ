@@ -35,3 +35,31 @@ describe('BrevoClient html', () => {
     expect(body.htmlContent).toBe('<p>hi</p>');
   });
 });
+
+describe('assistant knows about the email tool', () => {
+  it('only claims it can email when email_me is loaded', async () => {
+    const { Agent } = await import('../src/core/orchestrator/assistant');
+    const { ToolRegistry } = await import('../src/core/tool-registry');
+    const { z } = await import('zod');
+    const run = async (withEmail: boolean) => {
+      const registry = new ToolRegistry();
+      registry.register({ name: 'get_news', description: 'n', schema: z.object({}), run: async () => ({}) });
+      if (withEmail) registry.register({ name: 'email_me', description: 'e', schema: z.object({}), run: async () => ({}) });
+      let system = '';
+      const ai = {
+        chat: vi.fn(async (m: Array<{ role: string; content: string }>) => {
+          system = m[0]!.content;
+          return { content: 'Sir, ok.', toolCalls: [] };
+        }),
+        complete: vi.fn(),
+      };
+      const agent = new Agent({ ai: ai as never, store: { claimInbound: async () => true, saveOutbound: async () => undefined, recent: async () => [{ direction: 'in', text: 'hi' }] }, registry, timezone: 'Asia/Kolkata' });
+      await agent.respond('hi', { channel: 'telegram', chatId: '1' });
+      return system;
+    };
+    expect(await run(false)).toMatch(/can NOT yet send emails/);
+    const withEmail = await run(true);
+    expect(withEmail).not.toMatch(/can NOT yet send emails/);
+    expect(withEmail).toMatch(/CAN email the user/);
+  });
+});
