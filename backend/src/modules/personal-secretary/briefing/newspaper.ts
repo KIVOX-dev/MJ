@@ -131,7 +131,7 @@ export async function renderNewspaperPdf(payload: DigestPayload, deps: Newspaper
   // ---- masthead ----
   const NAVY = '#1f3a8a';
   let y = 26;
-  doc.font('xb').fontSize(78).fillColor(NAVY).text('MJ TIMES', M, y, { width: W, align: 'center', characterSpacing: 3, lineBreak: false });
+  doc.font('xb').fontSize(78).fillColor(INK).text('MJ TIMES', M, y, { width: W, align: 'center', characterSpacing: 3, lineBreak: false });
   y += 84;
   doc.save().rect(M, y, W, 8).fill(INK).restore();
   y += 17;
