@@ -1,0 +1,74 @@
+# Crawlit on your own server, protected by a secret token and HTTPS.
+#
+#   internet --> Caddy (443, HTTPS, requires "Authorization: Bearer <CRAWLIT_TOKEN>")
+#                  --> Crawlit (no published ports) --> Redis (private, no internet at all)
+#
+# Crawlit itself has NO authentication, so neither it nor Redis is ever published to the internet:
+# only the gateway has open ports. See README.md for the full walkthrough.
+#
+#   cp .env.example .env     # fill CRAWLIT_DOMAIN and CRAWLIT_TOKEN
+#   docker compose up -d --build
+services:
+  gateway:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"    # Let's Encrypt certificate challenge + redirect to HTTPS
+      - "443:443"
+    environment:
+      CRAWLIT_DOMAIN: ${CRAWLIT_DOMAIN:?set CRAWLIT_DOMAIN in .env}
+      CRAWLIT_TOKEN: ${CRAWLIT_TOKEN:?set CRAWLIT_TOKEN in .env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - crawlit
+    networks: [web, private]
+
+  crawlit:
+    # Pinned to the exact upstream commit that was reviewed (MIT licence): https://github.com/arufian/Crawlit
+    build:
+      context: https://github.com/arufian/Crawlit.git#eadb13109c753e70e6e703f22c64829aed1ceffb
+    restart: unless-stopped
+    # no "ports:" on purpose: reachable only through the gateway
+    environment:
+      REDIS_URL: redis://redis:6379
+      LOG_LEVEL: info
+      CACHE_TTL_SECONDS: ${CACHE_TTL_SECONDS:-86400}
+      STEALTH_MODE: ${STEALTH_MODE:-true}
+      BROWSER_POOL_SIZE: ${BROWSER_POOL_SIZE:-2}
+      RATE_LIMIT_MAX: ${RATE_LIMIT_MAX:-60}
+      CRAWL_CONCURRENCY: ${CRAWL_CONCURRENCY:-5}
+      CRAWL_RATE_PER_SEC: ${CRAWL_RATE_PER_SEC:-5}
+      SEARCH_ENGINE: ${SEARCH_ENGINE:-duckduckgo}
+      SEARCH_FALLBACK: ${SEARCH_FALLBACK:-true}
+      PROXY_URL: ${PROXY_URL:-}
+    depends_on:
+      redis:
+        condition: service_healthy
+    # "web" gives it outbound internet to fetch pages; "private" is how the gateway and Redis reach it
+    networks: [web, private]
+
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks: [private]
+
+networks:
+  web: {}
+  private:
+    internal: true   # Redis lives only here: no route to or from the internet
+
+volumes:
+  redis_data:
+  caddy_data:
+  caddy_config:

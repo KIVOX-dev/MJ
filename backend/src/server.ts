@@ -51,7 +51,7 @@ async function main() {
   const news = new CompositeNewsSource(newsSources);
   registerNewsTools(registry, news);
   // Crawlit (self-hosted crawler) is optional: with it MJ can render JS pages, search the web and crawl sites.
-  const crawlit = config.crawlitUrl ? new CrawlitClient(config.crawlitUrl) : undefined;
+  const crawlit = config.crawlitUrl ? new CrawlitClient(config.crawlitUrl, fetch, undefined, { token: config.crawlitToken }) : undefined;
   registerWebTools(registry, { crawlit });
   if (crawlit) void crawlit.health().then((ok) => (ok ? logger.info('Crawlit connected') : logger.warn('CRAWLIT_URL is set but Crawlit is not answering; falling back to the built-in page reader')));
   const memory = new MemoryService(new MongoMemoryRepo());

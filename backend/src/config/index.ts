@@ -19,6 +19,7 @@ const schema = z.object({
   PUBLIC_BASE_URL: z.string().optional(),
   JOBS_SECRET: z.string().optional(),
   CRAWLIT_URL: z.string().url().optional(),
+  CRAWLIT_TOKEN: z.string().min(16, 'CRAWLIT_TOKEN must be at least 16 characters').optional(),
   NEWSDATA_API_KEY: z.string().optional(),
   NEWS_DIGEST_ENABLED: z.enum(['true', 'false']).default('true'),
   NEWS_DIGEST_PREPARE_TIME: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, 'must be HH:mm').default('05:00'),
@@ -46,6 +47,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
     throw new Error(`Invalid environment configuration: ${issues}`);
   }
   const e = parsed.data;
+  if (e.CRAWLIT_URL) {
+    const u = new URL(e.CRAWLIT_URL);
+    const local = ['localhost', '127.0.0.1', '::1', '[::1]'].includes(u.hostname);
+    if (!local && u.protocol !== 'https:') throw new Error('Invalid environment configuration: CRAWLIT_URL must use https:// unless it is localhost');
+    if (!local && !e.CRAWLIT_TOKEN) throw new Error('Invalid environment configuration: a remote CRAWLIT_URL requires CRAWLIT_TOKEN');
+  }
   return {
     env: e.NODE_ENV,
     // On Catalyst AppSail the platform provides the port to bind to.
@@ -68,6 +75,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
     publicBaseUrl: e.PUBLIC_BASE_URL?.replace(/\/+$/, ''),
     jobsSecret: e.JOBS_SECRET,
     crawlitUrl: e.CRAWLIT_URL,
+    crawlitToken: e.CRAWLIT_TOKEN,
     news: {
       apiKey: e.NEWSDATA_API_KEY,
       digestEnabled: e.NEWS_DIGEST_ENABLED === 'true',

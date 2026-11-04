@@ -30,6 +30,8 @@ export class CrawlitClient {
     private readonly baseUrl: string,
     private readonly fetchFn: typeof fetch = fetch,
     private readonly sleep: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms)),
+    /** Shared secret for a server deployment: sent as "Authorization: Bearer <token>" (the gateway rejects anything else). */
+    private readonly opts: { token?: string } = {},
   ) {}
 
   private async call<T>(method: 'GET' | 'POST' | 'DELETE', path: string, body?: unknown, timeoutMs = 45_000): Promise<{ status: number; json: T }> {
@@ -38,12 +40,17 @@ export class CrawlitClient {
       res = await this.fetchFn(`${this.baseUrl.replace(/\/+$/, '')}${path}`, {
         method,
         signal: AbortSignal.timeout(timeoutMs),
-        ...(body === undefined ? {} : { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
+        headers: {
+          ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
+          ...(this.opts.token ? { Authorization: `Bearer ${this.opts.token}` } : {}),
+        },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       });
     } catch {
       throw new Error('The web reader (Crawlit) is not reachable or took too long');
     }
     const json = (await res.json().catch(() => ({}))) as T & { success?: boolean; error?: string };
+    if (res.status === 401) throw new Error('The web reader (Crawlit) rejected MJ: check that CRAWLIT_TOKEN matches the server');
     if (res.status >= 400 || json.success === false) {
       throw new Error(`Crawlit could not complete that request (${json.error ?? `HTTP ${res.status}`})`);
     }

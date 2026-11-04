@@ -1,0 +1,26 @@
+# HTTPS gateway in front of Crawlit. Caddy obtains and renews the certificate for CRAWLIT_DOMAIN automatically
+# (the domain must point at this server and ports 80/443 must be open).
+{$CRAWLIT_DOMAIN} {
+	# Every request must carry the shared secret, otherwise it never reaches Crawlit.
+	@unauthorised not header Authorization "Bearer {$CRAWLIT_TOKEN}"
+	respond @unauthorised "Unauthorized" 401
+
+	# Crawls and searches can take a while; do not cut the connection early.
+	reverse_proxy crawlit:3000 {
+		transport http {
+			read_timeout 120s
+			response_header_timeout 120s
+		}
+	}
+
+	# Keep logs free of the secret header.
+	log {
+		output stdout
+		format filter {
+			wrap console
+			fields {
+				request>headers>Authorization delete
+			}
+		}
+	}
+}
