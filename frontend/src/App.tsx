@@ -370,7 +370,7 @@ function SettingsSheet(p: { initial: Settings; required: boolean; onClose: () =>
           )}
         </div>
         <label>
-          Backend URL
+          Backend URL (optional)
           <input
             value={url}
             onChange={(e) => setUrl(e.target.value)}
@@ -378,7 +378,7 @@ function SettingsSheet(p: { initial: Settings; required: boolean; onClose: () =>
             autoCapitalize="none"
             autoCorrect="off"
             spellCheck={false}
-            placeholder="https://your-backend.example.com"
+            placeholder="Leave empty to use this site's connection"
           />
         </label>
         <label>
@@ -394,7 +394,7 @@ function SettingsSheet(p: { initial: Settings; required: boolean; onClose: () =>
           />
         </label>
         <p className="hint">
-          Works with MJ or any server that offers <code>POST /api/chat</code> and <code>GET /api/history</code>. Settings stay on this phone.
+          Leave the URL empty unless you use a different server. Works with MJ or any server that offers <code>POST /api/chat</code> and <code>GET /api/history</code>. Settings stay on this phone.
         </p>
         <button className="primary" type="submit" disabled={!token.trim()}>
           Save and connect
