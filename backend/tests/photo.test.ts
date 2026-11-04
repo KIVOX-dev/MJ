@@ -81,12 +81,12 @@ describe('Telegram photo handling', () => {
     expect(gif.respond).not.toHaveBeenCalled();
   });
 
-  it('does not treat a non-image document as a photo', async () => {
+  it('does not treat an unsupported file type as a photo or document', async () => {
     const { sender, respond, d } = deps();
-    await processTelegramUpdate(photoUpdate({ photo: undefined, caption: undefined, document: { file_id: 'pdf', mime_type: 'application/pdf', file_size: 10 } }), d);
+    await processTelegramUpdate(photoUpdate({ photo: undefined, caption: undefined, document: { file_id: 'zip', mime_type: 'application/zip', file_name: 'a.zip', file_size: 10 } }), d);
     expect(sender.downloadFile).not.toHaveBeenCalled();
     expect(respond).not.toHaveBeenCalled();
-    expect(sender.sendText).toHaveBeenCalledWith(7, expect.stringContaining('text and photos'));
+    expect(sender.sendText).toHaveBeenCalledWith(7, expect.stringContaining('PDFs and text files'));
   });
 });
 

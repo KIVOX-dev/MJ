@@ -6,7 +6,7 @@ export interface TelegramSender {
   /** Removes the inline keyboard from a message once its button has been used. */
   clearKeyboard?(chatId: number | string, messageId: number): Promise<void>;
   /** Downloads a file the user sent (photo etc.) by its file_id. */
-  downloadFile?(fileId: string): Promise<Buffer>;
+  downloadFile?(fileId: string, maxBytes?: number): Promise<Buffer>;
 }
 
 interface TgResponse<T> {
@@ -53,14 +53,14 @@ export class TelegramBotClient implements TelegramSender {
   }
 
   /** getFile + download. Errors never include the bot token (it is part of the download URL). */
-  async downloadFile(fileId: string): Promise<Buffer> {
+  async downloadFile(fileId: string, maxBytes = 5_000_000): Promise<Buffer> {
     const info = await this.call<{ file_path?: string; file_size?: number }>('getFile', { file_id: fileId });
     if (!info.file_path) throw new Error('Telegram returned no file path');
-    if ((info.file_size ?? 0) > 5_000_000) throw new Error('File is too large');
+    if ((info.file_size ?? 0) > maxBytes) throw new Error('File is too large');
     const res = await this.fetchFn(`https://api.telegram.org/file/bot${this.token}/${info.file_path}`);
     if (!res.ok) throw new Error(`Telegram file download failed (HTTP ${res.status})`);
     const buf = Buffer.from(await res.arrayBuffer());
-    if (buf.length > 5_000_000) throw new Error('File is too large');
+    if (buf.length > maxBytes) throw new Error('File is too large');
     return buf;
   }
 

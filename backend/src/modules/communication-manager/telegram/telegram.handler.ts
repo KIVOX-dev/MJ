@@ -1,6 +1,7 @@
 import { logger } from '../../../utils/logger';
 import type { Responder } from '../../../core/orchestrator/assistant';
 import type { MessageStore } from '../../../core/memory/message.store';
+import { MAX_DOC_BYTES, extractPdfText, extractPlainText } from '../../../utils/pdf';
 import type { TelegramSender } from './telegram.client';
 
 export interface TelegramHandlerDeps {
@@ -56,8 +57,18 @@ export interface TgUpdate {
     /** The same photo in several sizes, smallest first. */
     photo?: Array<{ file_id: string; width: number; height: number; file_size?: number }>;
     /** A file sent as a document (images sent "as file" arrive here). */
-    document?: { file_id: string; mime_type?: string; file_size?: number };
+    document?: { file_id: string; file_name?: string; mime_type?: string; file_size?: number };
   };
+}
+
+/** PDF or plain-text file the user sent (images sent as files are handled as photos). */
+function pickDocument(msg: NonNullable<TgUpdate['message']>): { fileId: string; name: string; kind: 'pdf' | 'text'; tooBig: boolean } | undefined {
+  const d = msg.document;
+  if (!d) return undefined;
+  const name = d.file_name ?? 'document';
+  const mime = d.mime_type ?? '';
+  const kind = mime === 'application/pdf' || /\.pdf$/i.test(name) ? 'pdf' : /^text\/plain/i.test(mime) || /\.txt$/i.test(name) ? 'text' : undefined;
+  return kind ? { fileId: d.file_id, name, kind, tooBig: (d.file_size ?? 0) > MAX_DOC_BYTES } : undefined;
 }
 
 const MAX_PHOTO_BYTES = 3_000_000; // keeps the base64 request well under the model's 4 MB limit
@@ -96,14 +107,15 @@ export async function processTelegramUpdate(update: TgUpdate, deps: TelegramHand
     }
 
     const photoId = pickPhoto(msg);
+    const docInfo = photoId ? undefined : pickDocument(msg);
     const caption = (msg.caption ?? '').trim();
 
     // Duplicate prevention: Telegram retries; update_id makes this idempotent.
     const fresh = await deps.store.claimInbound(
       String(update.update_id),
       fromId,
-      text || caption || (photoId ? '[photo]' : ''),
-      photoId ? 'photo' : text ? 'text' : 'other',
+      text || caption || (photoId ? '[photo]' : docInfo ? `[document: ${docInfo.name}]` : ''),
+      photoId ? 'photo' : docInfo ? 'document' : text ? 'text' : 'other',
     );
     if (!fresh) {
       logger.info({ id: update.update_id }, 'Duplicate Telegram update skipped');
@@ -132,8 +144,35 @@ export async function processTelegramUpdate(update: TgUpdate, deps: TelegramHand
       return;
     }
 
+    // PDFs and text files: download, extract the text, and let the agent read it with the caption as the question.
+    if (docInfo) {
+      if (docInfo.tooBig) {
+        await deps.sender.sendText(msg.chat.id, 'Sir, that file is over 10 MB. Please send a smaller one.');
+        return;
+      }
+      let extracted;
+      try {
+        if (!deps.sender.downloadFile) throw new Error('downloads not supported');
+        const file = await deps.sender.downloadFile(docInfo.fileId, MAX_DOC_BYTES);
+        extracted = docInfo.kind === 'pdf' ? await extractPdfText(file) : extractPlainText(file);
+      } catch (err) {
+        logger.warn({ err: { message: (err as Error).message } }, 'Telegram document could not be read');
+        await deps.sender.sendText(msg.chat.id, `Apologies, Sir. ${(err as Error).message}.`.replace('..', '.'));
+        return;
+      }
+      if (!extracted.text.trim()) {
+        await deps.sender.sendText(msg.chat.id, 'Sir, I found no text in that file. If it is a scan, please send photos of the pages instead.');
+        return;
+      }
+      const body = extracted.truncated ? `${extracted.text}\n[... the rest of the document was cut off ...]` : extracted.text;
+      const reply = await deps.respond(caption, { channel: 'telegram', chatId: fromId }, undefined, [{ name: docInfo.name, text: body }]);
+      const sent = await deps.sender.sendText(msg.chat.id, reply);
+      await deps.store.saveOutbound(`out-${sent.messageId}`, fromId, reply);
+      return;
+    }
+
     if (!text) {
-      await deps.sender.sendText(msg.chat.id, 'Sir, I can read text and photos for now. Voice notes and other files are coming soon.');
+      await deps.sender.sendText(msg.chat.id, 'Sir, I can read text, photos, PDFs and text files for now. Voice notes are coming soon.');
       return;
     }
     if (text === '/start') {

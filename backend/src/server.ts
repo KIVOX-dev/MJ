@@ -22,6 +22,7 @@ import { MongoJobRunRepo } from './jobs/job-run.repo';
 import { JobRunModel } from './models/job-run.model';
 import { MemoryService, MongoMemoryRepo } from './core/memory/memory.service';
 import { registerMemoryTools } from './core/memory/memory.tools';
+import { CrawlitClient } from './modules/research-assistant/web-search/crawlit.client';
 import { registerWebTools } from './modules/research-assistant/web-search/web.tools';
 import { MemoryModel } from './models/memory.model';
 import { renderNewspaperPdf } from './modules/personal-secretary/briefing/newspaper';
@@ -49,7 +50,10 @@ async function main() {
   if (!config.news.apiKey) logger.warn('NEWSDATA_API_KEY not set: using Google News RSS only');
   const news = new CompositeNewsSource(newsSources);
   registerNewsTools(registry, news);
-  registerWebTools(registry);
+  // Crawlit (self-hosted crawler) is optional: with it MJ can render JS pages, search the web and crawl sites.
+  const crawlit = config.crawlitUrl ? new CrawlitClient(config.crawlitUrl) : undefined;
+  registerWebTools(registry, { crawlit });
+  if (crawlit) void crawlit.health().then((ok) => (ok ? logger.info('Crawlit connected') : logger.warn('CRAWLIT_URL is set but Crawlit is not answering; falling back to the built-in page reader')));
   const memory = new MemoryService(new MongoMemoryRepo());
   registerMemoryTools(registry, memory);
   // Tells the assistant what already runs by itself, so it answers "when will I get breaking news?" instead of asking for details.

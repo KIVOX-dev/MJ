@@ -140,7 +140,7 @@ describe('web page reader', () => {
 
   it('works as the read_url tool and returns structured results', async () => {
     const registry = new ToolRegistry();
-    registerWebTools(registry, page('<title>T</title><p>Body text here</p>') as unknown as typeof fetch);
+    registerWebTools(registry, { fetchFn: page('<title>T</title><p>Body text here</p>') as unknown as typeof fetch });
     const ctx = { channel: 'telegram' as const, chatId: '1', timezone: 'Asia/Kolkata', now: () => new Date() };
     expect(await registry.execute('read_url', JSON.stringify({ url: 'https://example.com/a' }), ctx)).toMatchObject({ ok: true, title: 'T' });
     expect((await registry.execute('read_url', JSON.stringify({ url: 'https://linkedin.com/in/x' }), ctx)).ok).toBe(false);

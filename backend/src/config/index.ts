@@ -18,6 +18,7 @@ const schema = z.object({
   TELEGRAM_OWNER_ID: z.string().optional(),
   PUBLIC_BASE_URL: z.string().optional(),
   JOBS_SECRET: z.string().optional(),
+  CRAWLIT_URL: z.string().url().optional(),
   NEWSDATA_API_KEY: z.string().optional(),
   NEWS_DIGEST_ENABLED: z.enum(['true', 'false']).default('true'),
   NEWS_DIGEST_PREPARE_TIME: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, 'must be HH:mm').default('05:00'),
@@ -66,6 +67,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
     },
     publicBaseUrl: e.PUBLIC_BASE_URL?.replace(/\/+$/, ''),
     jobsSecret: e.JOBS_SECRET,
+    crawlitUrl: e.CRAWLIT_URL,
     news: {
       apiKey: e.NEWSDATA_API_KEY,
       digestEnabled: e.NEWS_DIGEST_ENABLED === 'true',
