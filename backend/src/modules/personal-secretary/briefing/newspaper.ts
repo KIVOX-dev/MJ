@@ -20,9 +20,6 @@ const PAGE_H = 841.89;
 const M = 40;
 const W = PAGE_W - 2 * M;
 const BOTTOM = PAGE_H - 58; // keep clear of the footer
-const IMG_W = 150;
-const IMG_H = 98;
-const GAP = 14;
 const MAX_STORIES_PER_SECTION = 3;
 
 async function mapLimit<T, R>(items: T[], limit: number, fn: (x: T) => Promise<R>): Promise<R[]> {
@@ -104,6 +101,9 @@ export async function renderNewspaperPdf(payload: DigestPayload, deps: Newspaper
   const rule = (y: number, w = 1, color = INK) => {
     doc.save().lineWidth(w).strokeColor(color).moveTo(M, y).lineTo(PAGE_W - M, y).stroke().restore();
   };
+  const rule2 = (x: number, yy: number, w: number, lw: number, color: string) => {
+    doc.save().lineWidth(lw).strokeColor(color).moveTo(x, yy).lineTo(x + w, yy).stroke().restore();
+  };
   const cover = (buf: Buffer, x: number, y: number, w: number, h: number) => {
     try {
       doc.save();
@@ -117,82 +117,170 @@ export async function renderNewspaperPdf(payload: DigestPayload, deps: Newspaper
     }
   };
 
-  let y = 34;
+  // Serif text uses the built-in Times (WinAnsi): keep only characters it can draw.
+  const WIN = '‘’“”–—•…€™';
+  const serif = (t: string) =>
+    Array.from(t.replace(/₹/g, 'Rs ').replace(/[‐‑]/g, '-').replace(/[  ]/g, ' '))
+      .filter((ch) => (ch >= ' ' && ch <= '~') || (ch >= '\u00a1' && ch <= '\u00ff') || WIN.includes(ch))
+      .join('')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+  const HEAD = { font: 'Times-Bold', size: 13, gap: 1.5 };
 
   // ---- masthead ----
-  rule(y, 3);
-  y += 6;
-  doc.font('xb').fontSize(62).fillColor(INK).text('MJ TIMES', M, y, { width: W, align: 'center', characterSpacing: 3, lineBreak: false });
-  y += 72;
-  rule(y, 0.8);
-  doc.font('sb').fontSize(8).fillColor(MUTED);
-  doc.text('MORNING EDITION', M, y + 6, { width: W / 3, align: 'left', characterSpacing: 1, lineBreak: false });
-  doc.font('b').fillColor(INK).text(clean(payload.date).toUpperCase(), M, y + 6, { width: W, align: 'center', characterSpacing: 1, lineBreak: false });
-  doc.font('sb').fillColor(MUTED).text('YOUR PERSONAL INTELLIGENCE ASSISTANT', M + (2 * W) / 3 - 40, y + 6, { width: W / 3 + 40, align: 'right', characterSpacing: 0.6, lineBreak: false });
-  y += 22;
-  rule(y, 1.6);
-  y += 16;
+  const NAVY = '#1f3a8a';
+  let y = 26;
+  doc.font('xb').fontSize(78).fillColor(NAVY).text('MJ TIMES', M, y, { width: W, align: 'center', characterSpacing: 3, lineBreak: false });
+  y += 84;
+  doc.save().rect(M, y, W, 8).fill(ACCENT).restore();
+  y += 17;
+  doc.font('xb').fontSize(11.5).fillColor(INK).text("YOUR MORNING NEWS BRIEFING  ·  TAMIL NADU  ·  INDIA  ·  WORLD  ·  CINEMA", M, y, { width: W, align: 'center', characterSpacing: 1.6, lineBreak: false });
+  y += 18;
+  doc.font('sb').fontSize(8).fillColor(INK).text(`${clean(payload.date).toUpperCase()} ·  MORNING EDITION ·  COMPILED BY MJ`, M, y, { width: W, align: 'center', characterSpacing: 0.9, lineBreak: false });
+  y += 15;
+  rule(y, 1.2);
+  y += 12;
 
-  const ensure = (need: number) => {
-    if (y + need > BOTTOM) {
-      doc.addPage();
-      y = M;
+  const flat = sections.flatMap((sec) => sec.stories.map((story) => ({ story, label: sec.label })));
+  const lead = hero ?? (flat.length ? { story: flat[0]!.story, label: flat[0]!.label } : undefined);
+  const GUT = 16;
+  const CW = (W - 2 * GUT) / 3;
+  const colX = (i: number) => M + i * (CW + GUT);
+  const LW = 2 * CW + GUT;
+  const PHOTO_H = 92;
+  const BODY = { font: 'Times-Roman', size: 9, gap: 1.4 };
+
+  // ---- banner: the lead story as a full-width headline with a red sub-head bar ----
+  if (lead) {
+    if (!hero) sections.forEach((sec) => (sec.stories = sec.stories.filter((x) => x !== lead.story)));
+    const head = clean(lead.story.summary).toUpperCase();
+    let size = 44;
+    doc.font('xb');
+    while (size > 18) {
+      doc.fontSize(size);
+      if (doc.heightOfString(head, { width: W }) <= doc.currentLineHeight() * 2 + 1) break;
+      size -= 1;
+    }
+    doc.fontSize(size).fillColor(INK);
+    const hh = doc.heightOfString(head, { width: W, lineGap: 0 });
+    doc.text(head, M, y, { width: W, align: 'center', lineGap: 0 });
+    y += hh + 8;
+    const sub = clean(lead.story.detail ?? '').replace(/^(.{20,95}?[.!?])\s.*$/, '$1');
+    const subtitle = sub && sub.length <= 110 ? sub : lead.label;
+    doc.save().rect(M, y, W, 24).fill(ACCENT).restore();
+    doc.font('b').fontSize(12).fillColor('#ffffff').text(`•  ${subtitle}`, M + 10, y + 6, { width: W - 20, align: 'center', lineBreak: false });
+    y += 36;
+
+    // photo (two columns) beside the lead story's text (one column)
+    const buf = hero ? photo(hero.story) : undefined;
+    if (buf) {
+      const imgH = 175;
+      const ok = cover(buf, M, y, LW, imgH);
+      const tx = colX(2);
+      let ty = y;
+      doc.font('b').fontSize(8).fillColor(ACCENT).text(lead.label, tx, ty, { width: CW, characterSpacing: 1.2, lineBreak: false });
+      ty += 16;
+      if (lead.story.detail) {
+        doc.font(BODY.font).fontSize(10.5).fillColor(INK).text(serif(lead.story.detail), tx, ty, { width: CW, align: 'justify', lineGap: 1.8, height: imgH - 40, ellipsis: true });
+      }
+      if (lead.story.source) doc.font('Times-Italic').fontSize(9).fillColor(MUTED).text(`By ${serif(lead.story.source)}`, tx, y + imgH - 12, { width: CW, lineBreak: false });
+      if (ok) y += imgH + 6;
+      doc.font('Times-Italic').fontSize(7.5).fillColor(MUTED).text(`Photo: ${serif(lead.story.source ?? 'MJ TIMES')}`, M, y, { width: LW, align: 'right', lineBreak: false });
+      y += 18;
+    }
+    rule(y - 4, 1.2);
+    y += 8;
+  }
+
+  // ---- everything else: three-column grid, each item goes into the shortest column that has room ----
+  interface Item {
+    story: Story;
+    label?: string;
+    section: number;
+  }
+  const items: Item[] = sections.flatMap((sec, si) => sec.stories.map((story, k) => ({ story, label: k === 0 ? sec.label : undefined, section: si })));
+
+  const columnTop = (page1: boolean): number[] => (page1 ? [y, y, y] : [M, M, M]);
+  let cols = columnTop(true);
+  let ruleTop = [y, y]; // where the vertical rules start on this page
+  const lastCol = new Map<number, number>();
+
+  const measure = (it: Item) => {
+    const buf = photo(it.story);
+    const first = !!it.label;
+    const hs = first ? 16 : 13;
+    doc.font(HEAD.font).fontSize(hs);
+    const text = serif(it.story.summary) + '.';
+    const th = doc.heightOfString(text, { width: CW, lineGap: HEAD.gap, align: 'center' });
+    const body = it.story.detail ? serif(it.story.detail) : '';
+    doc.font(BODY.font).fontSize(BODY.size);
+    const bh = body ? Math.min(doc.heightOfString(body, { width: CW, lineGap: BODY.gap, align: 'justify' }), 9 * 11.4 * 1) : 0;
+    const label = first ? 24 : 0;
+    return { buf, text, hs, th, body, bh, h: label + th + 6 + (buf ? PHOTO_H + 7 : 0) + (bh ? bh + 6 : 0) + (it.story.source ? 14 : 2) + 12 };
+  };
+
+  const verticals = () => {
+    const bottom = Math.max(...cols) - 8;
+    for (let i = 0; i < 2; i++) {
+      const top = ruleTop[i]!;
+      if (bottom > top) doc.save().lineWidth(0.4).strokeColor(RULE).moveTo(colX(i) + CW + GUT / 2, top).lineTo(colX(i) + CW + GUT / 2, bottom).stroke().restore();
     }
   };
 
-  // ---- lead story ----
-  if (hero) {
-    const buf = photo(hero.story)!;
-    const headline = clean(hero.story.summary) + '.';
-    doc.font('b').fontSize(9).fillColor(ACCENT).text(hero.label, M, y, { width: W, characterSpacing: 1.4, lineBreak: false });
-    y += 15;
-    const imgH = 232;
-    if (cover(buf, M, y, W, imgH)) y += imgH + 10;
-    doc.font('xb').fontSize(19).fillColor(INK);
-    const h = doc.heightOfString(headline, { width: W, lineGap: 2 });
-    doc.text(headline, M, y, { width: W, lineGap: 2 });
-    y += h + 4;
-    if (hero.story.source) {
-      doc.font('sb').fontSize(8.5).fillColor(MUTED).text(`PHOTO & REPORT: ${clean(hero.story.source).toUpperCase()}`, M, y, { width: W, characterSpacing: 0.8, lineBreak: false });
-      y += 14;
+  const queue = [...items];
+  while (queue.length) {
+    const fitsAt = (m: ReturnType<typeof measure>, c: number) => cols[c]! + m.h <= BOTTOM;
+    let pick = 0;
+    let m = measure(queue[0]!);
+    if (![0, 1, 2].some((c) => fitsAt(m, c))) {
+      // the next story is too tall for what is left of this page: use a later, shorter one to fill the gap
+      const k = queue.slice(1, 8).findIndex((q) => [0, 1, 2].some((c) => fitsAt(measure(q), c)));
+      if (k >= 0) {
+        pick = k + 1;
+        m = measure(queue[pick]!);
+      }
     }
-    y += 6;
+    const it = queue.splice(pick, 1)[0]!;
+    const fits = (c: number) => fitsAt(m, c);
+    const prev = lastCol.get(it.section);
+    let c = prev !== undefined && !it.label && fits(prev) ? prev : -1;
+    if (c < 0) {
+      const open = [0, 1, 2].filter(fits);
+      if (!open.length) {
+        verticals();
+        doc.addPage();
+        cols = columnTop(false);
+        ruleTop = [M, M];
+        c = 0;
+      } else c = open.reduce((a, b) => (cols[b]! < cols[a]! ? b : a));
+    }
+    lastCol.set(it.section, c);
+
+    const x = colX(c);
+    let cy = cols[c]!;
+    if (it.label) {
+      rule2(x, cy, CW, 1.4, INK);
+      doc.font('b').fontSize(7.5).fillColor(ACCENT).text(it.label, x, cy + 5, { width: CW, characterSpacing: 1.1, lineBreak: false });
+      rule2(x, cy + 17, CW, 0.4, RULE);
+      cy += 24;
+    } else {
+      rule2(x, cy - 5, CW, 0.4, RULE);
+    }
+    doc.font(HEAD.font).fontSize(m.hs).fillColor(INK).text(m.text, x, cy, { width: CW, lineGap: HEAD.gap, align: 'center' });
+    cy += m.th + 6;
+    if (m.buf && cover(m.buf, x, cy, CW, PHOTO_H)) cy += PHOTO_H + 7;
+    if (m.body) {
+      doc.font(BODY.font).fontSize(BODY.size).fillColor('#222222').text(m.body, x, cy, { width: CW, lineGap: BODY.gap, align: 'justify', height: m.bh, ellipsis: true });
+      cy += m.bh + 6;
+    }
+    if (it.story.source) {
+      doc.font('Times-Italic').fontSize(8.5).fillColor(MUTED).text(`By ${serif(it.story.source)}`, x, cy, { width: CW, lineBreak: false });
+      cy += 12;
+    }
+    cols[c] = cy + 12;
   }
-
-  // ---- sections ----
-  for (const sec of sections) {
-    if (!sec.stories.length) continue;
-    ensure(28 + IMG_H + 20); // keep the header with its first story
-    doc.save().rect(M, y, W, 20).fill(ACCENT).restore();
-    doc.font('b').fontSize(10).fillColor('#ffffff').text(sec.label, M + 9, y + 5.5, { width: W - 18, characterSpacing: 1.3, lineBreak: false });
-    y += 30;
-
-    sec.stories.forEach((st, idx) => {
-      const buf = photo(st);
-      const textX = buf ? M + IMG_W + GAP : M;
-      const textW = buf ? W - IMG_W - GAP : W;
-      const body = clean(st.summary) + '.';
-      doc.font('sb').fontSize(11.5);
-      const textH = doc.heightOfString(body, { width: textW, lineGap: 2.5 });
-      const rowH = Math.max(buf ? IMG_H : 0, textH + 18);
-      ensure(rowH + 12);
-
-      let drewImage = false;
-      if (buf) drewImage = cover(buf, M, y, IMG_W, IMG_H);
-      const tx = drewImage ? textX : M;
-      const tw = drewImage ? textW : W;
-      doc.font('sb').fontSize(11.5).fillColor(INK).text(body, tx, y, { width: tw, lineGap: 2.5 });
-      if (st.source) {
-        doc.font('r').fontSize(8).fillColor(MUTED).text(clean(st.source).toUpperCase(), tx, y + textH + 4, { width: tw, characterSpacing: 0.9, lineBreak: false });
-      }
-      y += rowH + 10;
-      if (idx < sec.stories.length - 1) {
-        rule(y - 4, 0.4, RULE);
-        y += 6;
-      }
-    });
-    y += 8;
-  }
+  verticals();
 
   // ---- footers ----
   const { start, count } = doc.bufferedPageRange();

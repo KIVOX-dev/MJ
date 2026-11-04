@@ -94,6 +94,17 @@ const SUMMARY_PROMPT =
 const DIVIDER = '──────────────';
 const isFiller = (b: string) => /^no (fresh |usable |new |major )?(updates?|news|articles?)\b/i.test(b);
 
+/** Feed description cleaned for print: no HTML, no repeat of the headline, at most ~260 chars ending on a word. */
+function articleDetail(desc: string | undefined, headline: string): string | undefined {
+  const t = (desc ?? '').replace(/<[^>]*>/g, ' ').replace(/&nbsp;|&amp;/g, ' ').replace(/\s+/g, ' ').trim();
+  if (t.length < 50) return undefined;
+  const norm = (x: string) => x.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  if (norm(t).startsWith(norm(headline).slice(0, 40)) && t.length < headline.length + 40) return undefined;
+  if (t.length <= 260) return t;
+  const cut = t.slice(0, 260);
+  return cut.slice(0, Math.max(cut.lastIndexOf(' '), 200)).replace(/[,;:\s]+$/, '') + '...';
+}
+
 /** Parses the model's "## title" + "• [n] sentence (Source)" output into structured sections. */
 export function parseBody(body: string, articles: Map<string, Article[]> = new Map()): DigestSection[] {
   const bySection = new Map<string, Story[]>();
@@ -114,7 +125,7 @@ export function parseBody(body: string, articles: Map<string, Article[]> = new M
     const summary = (sm ? text.slice(0, sm.index) : text).replace(/[.\s]+$/, '').trim();
     if (!summary) continue;
     const article = m[1] ? articles.get(current)?.[Number(m[1]) - 1] : undefined;
-    bySection.get(current)!.push({ summary, source: sm?.[1]?.trim() ?? article?.source, imageUrl: article?.imageUrl });
+    bySection.get(current)!.push({ summary, source: sm?.[1]?.trim() ?? article?.source, imageUrl: article?.imageUrl, detail: articleDetail(article?.description, summary) });
   }
   return SECTIONS.map((s) => ({
     title: s.title,

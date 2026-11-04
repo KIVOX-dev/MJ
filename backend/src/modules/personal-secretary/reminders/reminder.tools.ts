@@ -15,15 +15,15 @@ export function registerReminderTools(registry: ToolRegistry, svc: ReminderServi
       '(a) in_minutes for relative times like "in 2 minutes" or "in 1 hour" (convert to minutes); or ' +
       '(b) day + time for clock times: day is "today", "tomorrow" or a date YYYY-MM-DD, and time is 24-hour HH:mm ' +
       'in the user\'s local time (Asia/Kolkata). Do NOT work out calendar dates yourself: pass the word "today" or "tomorrow". ' +
-      'If the user wants to be reminded again and again until they stop it ("keep reminding me", "every 10 minutes ' +
-      'until I stop"), also set repeat_every_minutes (use 10 unless they name another interval): MJ then repeats and ' +
-      'shows a Stop button on Telegram.',
+      'EVERY reminder repeats every 10 minutes (with a Stop button on Telegram) until the user stops it, so it cannot be missed. ' +
+      'Set repeat_every_minutes only if the user names another interval; set once=true ONLY if they explicitly say it should ring just once.',
     schema: z.object({
       text: z.string().min(1).max(500).describe('What to remind the user about, phrased as a short message'),
       in_minutes: z.number().int().min(1).max(525600).optional().describe('Minutes from now'),
       day: z.string().optional().describe('"today", "tomorrow" or YYYY-MM-DD (use with time)'),
       time: z.string().optional().describe('24-hour HH:mm local time (use with day)'),
-      repeat_every_minutes: z.number().int().min(1).max(1440).optional().describe('Repeat every N minutes until the user stops it'),
+      repeat_every_minutes: z.number().int().min(1).max(1440).optional().describe('Repeat interval in minutes (default 10)'),
+      once: z.boolean().optional().describe('true ONLY if the user explicitly wants a single, non-repeating reminder'),
     }),
     async run(args, ctx) {
       const relative = args.in_minutes !== undefined;
@@ -32,7 +32,7 @@ export function registerReminderTools(registry: ToolRegistry, svc: ReminderServi
       const dueAt = relative
         ? new Date(ctx.now().getTime() + args.in_minutes! * 60_000)
         : resolveLocalDateTime(args.day!, args.time!, ctx.now(), ctx.timezone);
-      const r = await svc.create(ctx.channel, ctx.chatId, args.text, dueAt, args.repeat_every_minutes);
+      const r = await svc.create(ctx.channel, ctx.chatId, args.text, dueAt, args.once ? undefined : (args.repeat_every_minutes ?? 10));
       return {
         id: r.id,
         text: r.text,

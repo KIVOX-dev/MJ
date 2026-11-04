@@ -4,6 +4,8 @@ export interface Story {
   summary: string;
   /** Publisher name, e.g. "The Hindu". */
   source?: string;
+  /** Short article description (from the feed), used as body text in the PDF edition. */
+  detail?: string;
   /** Photo from the article's feed, used by the PDF edition only. */
   imageUrl?: string;
 }
