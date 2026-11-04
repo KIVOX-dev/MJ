@@ -1,0 +1,105 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="MJ brain">
+  <defs>
+    <radialGradient id="bg" cx="50%" cy="38%" r="85%">
+      <stop offset="0" stop-color="#34107f"/>
+      <stop offset="0.55" stop-color="#12053a"/>
+      <stop offset="1" stop-color="#05011a"/>
+    </radialGradient>
+    <radialGradient id="halo" cx="50%" cy="48%" r="50%">
+      <stop offset="0" stop-color="#b02bff" stop-opacity="0.55"/>
+      <stop offset="0.6" stop-color="#2d6bff" stop-opacity="0.16"/>
+      <stop offset="1" stop-color="#2d6bff" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="fill" x1="0.02" y1="0.05" x2="0.98" y2="0.9">
+      <stop offset="0" stop-color="#ff2fd0"/>
+      <stop offset="0.52" stop-color="#a21cff"/>
+      <stop offset="1" stop-color="#1f6bff"/>
+    </linearGradient>
+    <linearGradient id="fill2" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#c026ff"/>
+      <stop offset="1" stop-color="#1f7cff"/>
+    </linearGradient>
+    <radialGradient id="shade" cx="36%" cy="22%" r="85%">
+      <stop offset="0.45" stop-color="#1a0058" stop-opacity="0"/>
+      <stop offset="1" stop-color="#2a0078" stop-opacity="0.22"/>
+    </radialGradient>
+    <radialGradient id="gloss" cx="32%" cy="20%" r="48%">
+      <stop offset="0" stop-color="#fff" stop-opacity="0.6"/>
+      <stop offset="1" stop-color="#fff" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="rim" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#fff" stop-opacity="0.95"/>
+      <stop offset="0.45" stop-color="#ffd6fb" stop-opacity="0.35"/>
+      <stop offset="1" stop-color="#9fd0ff" stop-opacity="0.15"/>
+    </linearGradient>
+    <filter id="glow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="9" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="soft" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="2.6" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+
+    <path id="cerebrum" d="M104 288 C70 268 62 226 84 196 C92 170 118 150 146 150 C150 122 186 104 214 116 C232 88 276 84 300 108 C326 90 372 100 384 134 C420 134 448 164 442 200 C466 222 462 262 436 278 C438 300 420 320 396 322 C380 336 352 336 336 326 C312 340 284 338 262 324 C238 342 200 344 180 326 C150 338 116 316 104 288 Z"/>
+    <path id="cerebellum" d="M340 322 C378 316 424 330 428 360 C430 388 392 402 360 394 C334 388 322 360 334 340 Z"/>
+    <path id="stem" d="M290 330 C292 366 298 396 306 432 L338 432 C331 396 331 364 337 342 Z"/>
+    <clipPath id="clipC"><use href="#cerebrum"/></clipPath>
+  </defs>
+
+  <rect width="512" height="512" rx="112" fill="url(#bg)"/>
+  <circle cx="256" cy="246" r="240" fill="url(#halo)"/>
+
+  <!-- back layers: stem + cerebellum -->
+  <g filter="url(#glow)">
+    <use href="#stem" fill="url(#fill2)"/>
+    <use href="#cerebellum" fill="url(#fill2)"/>
+  </g>
+  <g fill="none" stroke="#fff" stroke-linecap="round" opacity="0.75" filter="url(#soft)">
+    <path d="M348 348 C376 340 410 348 420 366" stroke-width="4.5"/>
+    <path d="M344 364 C370 358 398 366 410 380" stroke-width="4.5"/>
+    <path d="M346 380 C366 376 384 382 392 390" stroke-width="4"/>
+    <path d="M308 352 L314 416" stroke-width="4"/>
+  </g>
+
+  <!-- cerebrum -->
+  <g filter="url(#glow)">
+    <use href="#cerebrum" fill="url(#fill)"/>
+  </g>
+  <use href="#cerebrum" fill="url(#shade)"/>
+  <use href="#cerebrum" fill="url(#gloss)"/>
+  <use href="#cerebrum" fill="none" stroke="url(#rim)" stroke-width="4" stroke-linejoin="round"/>
+
+  <!-- sulci -->
+  <g clip-path="url(#clipC)" fill="none" stroke="#fff" stroke-linecap="round" stroke-linejoin="round" filter="url(#soft)">
+    <path d="M262 92 C248 140 272 178 252 232" stroke-width="7" opacity="0.95"/>
+    <path d="M112 268 C176 252 244 262 302 304" stroke-width="7" opacity="0.95"/>
+    <path d="M170 166 C196 150 226 168 214 196 C208 212 190 214 182 206" stroke-width="5.5" opacity="0.85"/>
+    <path d="M300 136 C330 124 358 148 340 176 C330 192 312 188 308 178" stroke-width="5.5" opacity="0.85"/>
+    <path d="M376 176 C406 170 424 202 404 226 C394 238 376 234 372 224" stroke-width="5.5" opacity="0.85"/>
+    <path d="M132 224 C150 206 176 220 170 244" stroke-width="5" opacity="0.8"/>
+    <path d="M322 232 C348 220 376 238 366 266 C360 280 342 280 336 272" stroke-width="5" opacity="0.8"/>
+    <path d="M210 120 C202 140 214 150 226 148" stroke-width="4.5" opacity="0.7"/>
+    <path d="M400 262 C418 262 430 274 428 290" stroke-width="4.5" opacity="0.7"/>
+    <path d="M196 288 C216 282 238 292 244 306" stroke-width="4.5" opacity="0.7"/>
+  </g>
+
+  <!-- neural network overlay -->
+  <g fill="none" stroke="#fff" stroke-width="2" opacity="0.55" stroke-linecap="round">
+    <path d="M252 232 L214 196 L182 206"/>
+    <path d="M252 232 L302 304 L340 176"/>
+    <path d="M340 176 L404 226"/>
+    <path d="M302 304 L366 266 L404 226"/>
+    <path d="M214 196 L262 144 L340 176"/>
+  </g>
+  <g filter="url(#soft)" fill="#fff">
+    <circle cx="252" cy="232" r="8"/>
+    <circle cx="214" cy="196" r="6.5"/>
+    <circle cx="182" cy="206" r="5.5"/>
+    <circle cx="302" cy="304" r="7.5"/>
+    <circle cx="340" cy="176" r="7"/>
+    <circle cx="404" cy="226" r="6.5"/>
+    <circle cx="366" cy="266" r="5.5"/>
+    <circle cx="262" cy="144" r="5"/>
+  </g>
+</svg>

@@ -1,0 +1,11 @@
+{
+  "name": "MJ",
+  "short_name": "MJ",
+  "description": "Your personal intelligence assistant",
+  "start_url": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#06021a",
+  "theme_color": "#06021a",
+  "icons": [{ "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }]
+}

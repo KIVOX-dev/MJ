@@ -33,6 +33,10 @@ import { WhatsAppCloudClient } from './modules/communication-manager/whatsapp/wh
 import { whatsappRouter } from './routes/whatsapp.routes';
 import { telegramRouter } from './routes/telegram.routes';
 import { TelegramBotClient } from './modules/communication-manager/telegram/telegram.client';
+import { BrevoClient } from './modules/communication-manager/email/brevo.client';
+import { registerEmailTools } from './modules/communication-manager/email/email.tools';
+import { GroqTranscriber } from './core/ai-engine/transcribe';
+import { webChatRouter } from './routes/web.routes';
 import { logger } from './utils/logger';
 
 async function main() {
@@ -54,6 +58,13 @@ async function main() {
   const crawlit = config.crawlitUrl ? new CrawlitClient(config.crawlitUrl, fetch, undefined, { token: config.crawlitToken }) : undefined;
   registerWebTools(registry, { crawlit });
   if (crawlit) void crawlit.health().then((ok) => (ok ? logger.info('Crawlit connected') : logger.warn('CRAWLIT_URL is set but Crawlit is not answering; falling back to the built-in page reader')));
+  const em = config.email;
+  if (em.brevoApiKey && em.senderEmail && em.ownerEmail) {
+    registerEmailTools(registry, new BrevoClient({ apiKey: em.brevoApiKey, senderEmail: em.senderEmail, senderName: em.senderName }), em.ownerEmail);
+    logger.info('Email enabled (Brevo): MJ can email the owner');
+  } else if (em.brevoApiKey) {
+    logger.warn('BREVO_API_KEY is set but BREVO_SENDER_EMAIL or OWNER_EMAIL is missing: email disabled');
+  }
   const memory = new MemoryService(new MongoMemoryRepo());
   registerMemoryTools(registry, memory);
   // Tells the assistant what already runs by itself, so it answers "when will I get breaking news?" instead of asking for details.
@@ -134,6 +145,15 @@ Reply "stop reminders" to stop these.` : text);
     logger.info('Telegram webhook enabled at /webhook/telegram');
   } else {
     logger.warn('Telegram disabled: TELEGRAM_BOT_TOKEN / TELEGRAM_WEBHOOK_SECRET not set');
+  }
+
+  // Mobile web app: same assistant as the Telegram bot (shared history, memory and reminders).
+  const stt = new GroqTranscriber(config.groq.apiKeys);
+  if (config.webApiToken && tg.ownerId) {
+    extraRouters.push(webChatRouter({ token: config.webApiToken, respond: makeAgent('telegram'), store: new MongoMessageStore('telegram'), ownerChatId: tg.ownerId, transcribe: (a, m) => stt.transcribe(a, m) }));
+    logger.info('Web chat API enabled at /api/chat');
+  } else if (config.webApiToken) {
+    logger.warn('WEB_API_TOKEN is set but TELEGRAM_OWNER_ID is missing: web chat disabled');
   }
 
   // Delivers due reminders through whichever channel they were created on.

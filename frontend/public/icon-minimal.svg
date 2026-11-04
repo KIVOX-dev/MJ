@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="MJ brain">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ff3fd8"/>
+      <stop offset="0.5" stop-color="#8a2bff"/>
+      <stop offset="1" stop-color="#2a6bff"/>
+    </linearGradient>
+    <filter id="lift" x="-20%" y="-20%" width="140%" height="150%">
+      <feDropShadow dx="0" dy="10" stdDeviation="12" flood-color="#2b0a7a" flood-opacity="0.45"/>
+    </filter>
+    <path id="cerebrum" d="M104 288 C70 268 62 226 84 196 C92 170 118 150 146 150 C150 122 186 104 214 116 C232 88 276 84 300 108 C326 90 372 100 384 134 C420 134 448 164 442 200 C466 222 462 262 436 278 C438 300 420 320 396 322 C380 336 352 336 336 326 C312 340 284 338 262 324 C238 342 200 344 180 326 C150 338 116 316 104 288 Z"/>
+    <path id="cerebellum" d="M340 322 C378 316 424 330 428 360 C430 388 392 402 360 394 C334 388 322 360 334 340 Z"/>
+    <path id="stem" d="M290 330 C292 366 298 396 306 432 L338 432 C331 396 331 364 337 342 Z"/>
+    <mask id="cut" maskUnits="userSpaceOnUse" x="0" y="0" width="512" height="512">
+      <rect width="512" height="512" fill="#fff"/>
+      <g fill="none" stroke="#000" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M262 92 C248 140 272 178 252 232" stroke-width="11"/>
+        <path d="M112 268 C176 252 244 262 302 304" stroke-width="11"/>
+        <path d="M170 166 C196 150 226 168 214 196 C208 212 190 214 182 206" stroke-width="9"/>
+        <path d="M300 136 C330 124 358 148 340 176 C330 192 312 188 308 178" stroke-width="9"/>
+        <path d="M376 176 C406 170 424 202 404 226 C394 238 376 234 372 224" stroke-width="9"/>
+        <path d="M132 224 C150 206 176 220 170 244" stroke-width="8"/>
+        <path d="M322 232 C348 220 376 238 366 266 C360 280 342 280 336 272" stroke-width="8"/>
+        <path d="M348 346 C376 338 410 346 420 364" stroke-width="8"/>
+        <path d="M346 366 C372 360 398 368 410 382" stroke-width="8"/>
+      </g>
+    </mask>
+  </defs>
+
+  <rect width="512" height="512" rx="112" fill="url(#bg)"/>
+  <g transform="translate(256 252) scale(0.9) translate(-264 -258)">
+    <g filter="url(#lift)" mask="url(#cut)" fill="#fff">
+      <use href="#cerebrum"/>
+      <use href="#cerebellum"/>
+      <use href="#stem"/>
+    </g>
+  </g>
+</svg>
