@@ -16,7 +16,7 @@ export class BrevoClient {
     private readonly fetchFn: typeof fetch = fetch,
   ) {}
 
-  async send(to: string, subject: string, text: string, attachments: EmailAttachment[] = []): Promise<{ messageId?: string }> {
+  async send(to: string, subject: string, text: string, attachments: EmailAttachment[] = [], html?: string): Promise<{ messageId?: string }> {
     const res = await this.fetchFn('https://api.brevo.com/v3/smtp/email', {
       method: 'POST',
       headers: { 'api-key': this.o.apiKey, 'content-type': 'application/json', accept: 'application/json' },
@@ -25,6 +25,7 @@ export class BrevoClient {
         to: [{ email: to }],
         subject,
         textContent: text,
+        ...(html ? { htmlContent: html } : {}),
         ...(attachments.length ? { attachment: attachments.map((a) => ({ name: a.name, content: a.data.toString('base64') })) } : {}),
       }),
       signal: AbortSignal.timeout(20_000),

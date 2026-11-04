@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { ToolRegistry } from '../../../core/tool-registry';
 import type { BrevoClient } from './brevo.client';
+import { renderEmailHtml } from './template';
 
 /** Lets MJ email the OWNER only. The recipient is fixed in config, never chosen by the model (prevents data being mailed elsewhere). */
 export function registerEmailTools(registry: ToolRegistry, brevo: BrevoClient, ownerEmail: string): void {
@@ -14,7 +15,8 @@ export function registerEmailTools(registry: ToolRegistry, brevo: BrevoClient, o
       body: z.string().min(1).max(20000).describe('Plain-text email body'),
     }),
     async run(args) {
-      const r = await brevo.send(ownerEmail, args.subject, args.body);
+      const date = new Date().toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+      const r = await brevo.send(ownerEmail, args.subject, args.body, [], renderEmailHtml(args.subject, args.body, { date }));
       return { sent_to: ownerEmail, message_id: r.messageId ?? null };
     },
   });
