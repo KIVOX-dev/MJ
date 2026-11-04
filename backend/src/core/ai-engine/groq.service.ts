@@ -9,9 +9,12 @@ export interface ToolCall {
   function: { name: string; arguments: string };
 }
 
+/** A piece of a multimodal user message: text, or an image as a data: URL. */
+export type ContentPart = { type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } };
+
 export interface ChatMessage {
   role: ChatRole;
-  content: string | null;
+  content: string | ContentPart[] | null;
   tool_calls?: ToolCall[];
   tool_call_id?: string;
 }
@@ -87,10 +90,10 @@ export class GroqService {
   /** Chat completion that may return tool calls. */
   async chat(
     messages: ChatMessage[],
-    opts: { temperature?: number; maxTokens?: number; tools?: ToolSpec[] } = {},
+    opts: { temperature?: number; maxTokens?: number; tools?: ToolSpec[]; /** override the model chain, e.g. a vision model */ models?: string[] } = {},
   ): Promise<ChatResult> {
     let lastErr: unknown;
-    for (const model of this.models) {
+    for (const model of opts.models?.length ? opts.models : this.models) {
       for (const idx of this.keyOrder()) {
         try {
           const res = await this.clients[idx]!.chat.completions.create({

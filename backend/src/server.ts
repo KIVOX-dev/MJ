@@ -20,6 +20,10 @@ import { registerNewsTools } from './modules/research-assistant/web-search/news.
 import { NewsDigestService } from './modules/personal-secretary/briefing/news-digest.service';
 import { MongoJobRunRepo } from './jobs/job-run.repo';
 import { JobRunModel } from './models/job-run.model';
+import { MemoryService, MongoMemoryRepo } from './core/memory/memory.service';
+import { registerMemoryTools } from './core/memory/memory.tools';
+import { registerWebTools } from './modules/research-assistant/web-search/web.tools';
+import { MemoryModel } from './models/memory.model';
 import { renderNewspaperPdf } from './modules/personal-secretary/briefing/newspaper';
 import { sectionFeeds } from './modules/personal-secretary/briefing/section-feeds';
 import { startDispatcher } from './jobs/dispatcher';
@@ -34,7 +38,7 @@ async function main() {
   const config = loadConfig();
   await connectDatabase(config.mongoUri, config.dnsServers);
   // Keep DB indexes in line with the schemas (drops stale ones left by older versions).
-  await Promise.all([MessageModel.syncIndexes(), ReminderModel.syncIndexes(), JobRunModel.syncIndexes(), SeenArticleModel.syncIndexes()]);
+  await Promise.all([MessageModel.syncIndexes(), ReminderModel.syncIndexes(), JobRunModel.syncIndexes(), SeenArticleModel.syncIndexes(), MemoryModel.syncIndexes()]);
 
   const groq = GroqService.fromConfig(config.groq);
   const reminders = new ReminderService(new MongoReminderRepo(), config.timezone);
@@ -45,6 +49,9 @@ async function main() {
   if (!config.news.apiKey) logger.warn('NEWSDATA_API_KEY not set: using Google News RSS only');
   const news = new CompositeNewsSource(newsSources);
   registerNewsTools(registry, news);
+  registerWebTools(registry);
+  const memory = new MemoryService(new MongoMemoryRepo());
+  registerMemoryTools(registry, memory);
   // Tells the assistant what already runs by itself, so it answers "when will I get breaking news?" instead of asking for details.
   const automationNotes =
     'AUTOMATIC FEATURES ALREADY RUNNING (the user does not need to ask for these): ' +
@@ -63,6 +70,8 @@ async function main() {
       registry,
       timezone: config.timezone,
       extraInstructions: automationNotes,
+      memory,
+      visionModels: config.groq.visionModels,
     }).respond;
 
   const extraRouters: Router[] = [];

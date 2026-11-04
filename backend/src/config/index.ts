@@ -30,6 +30,7 @@ const schema = z.object({
   DNS_SERVERS: z.string().optional(),
   MONGODB_URI: z.string().min(1, 'MONGODB_URI is required'),
   GROQ_API_KEYS: z.string().min(1, 'GROQ_API_KEYS is required'),
+  GROQ_VISION_MODELS: z.string().default('qwen/qwen3.8-27b'),
   GROQ_MODELS: z.string().default('openai/gpt-oss-120b,qwen/qwen3.8-27b,openai/gpt-oss-20b'),
 });
 
@@ -78,6 +79,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
     corsOrigins: list(e.CORS_ORIGINS),
     dnsServers: e.DNS_SERVERS ? list(e.DNS_SERVERS) : [],
     mongoUri: e.MONGODB_URI,
-    groq: { apiKeys: list(e.GROQ_API_KEYS), models: list(e.GROQ_MODELS) },
+    groq: { apiKeys: list(e.GROQ_API_KEYS), models: list(e.GROQ_MODELS), visionModels: list(e.GROQ_VISION_MODELS) },
   };
 }

@@ -51,7 +51,28 @@ export interface TgUpdate {
     from?: { id: number; is_bot?: boolean };
     chat: { id: number; type: string };
     text?: string;
+    /** Text that accompanies a photo or file. */
+    caption?: string;
+    /** The same photo in several sizes, smallest first. */
+    photo?: Array<{ file_id: string; width: number; height: number; file_size?: number }>;
+    /** A file sent as a document (images sent "as file" arrive here). */
+    document?: { file_id: string; mime_type?: string; file_size?: number };
   };
+}
+
+const MAX_PHOTO_BYTES = 3_000_000; // keeps the base64 request well under the model's 4 MB limit
+const isJpeg = (b: Buffer) => b.length > 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff;
+const isPng = (b: Buffer) => b.length > 8 && b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47;
+
+/** Picks the biggest rendition that is still sensible to send to the model (<= 1600 px, <= 3 MB). */
+function pickPhoto(msg: NonNullable<TgUpdate['message']>): string | undefined {
+  if (msg.photo?.length) {
+    const ok = msg.photo.filter((p) => p.width <= 1600 && p.height <= 1600 && (p.file_size ?? 0) <= MAX_PHOTO_BYTES);
+    return (ok.length ? ok[ok.length - 1]! : msg.photo[0]!).file_id;
+  }
+  const d = msg.document;
+  if (d && /^image\/(jpeg|png)$/i.test(d.mime_type ?? '') && (d.file_size ?? 0) <= MAX_PHOTO_BYTES) return d.file_id;
+  return undefined;
 }
 
 export async function processTelegramUpdate(update: TgUpdate, deps: TelegramHandlerDeps): Promise<void> {
@@ -74,18 +95,45 @@ export async function processTelegramUpdate(update: TgUpdate, deps: TelegramHand
       return;
     }
 
+    const photoId = pickPhoto(msg);
+    const caption = (msg.caption ?? '').trim();
+
     // Duplicate prevention: Telegram retries; update_id makes this idempotent.
-    const fresh = await deps.store.claimInbound(String(update.update_id), fromId, text, text ? 'text' : 'other');
+    const fresh = await deps.store.claimInbound(
+      String(update.update_id),
+      fromId,
+      text || caption || (photoId ? '[photo]' : ''),
+      photoId ? 'photo' : text ? 'text' : 'other',
+    );
     if (!fresh) {
       logger.info({ id: update.update_id }, 'Duplicate Telegram update skipped');
       return;
     }
 
+    // Photos: download, then let the agent look at it with the caption as the question.
+    if (photoId) {
+      let image: Buffer;
+      try {
+        if (!deps.sender.downloadFile) throw new Error('downloads not supported');
+        image = await deps.sender.downloadFile(photoId);
+      } catch (err) {
+        logger.error({ err: { message: (err as Error).message } }, 'Telegram photo download failed');
+        await deps.sender.sendText(msg.chat.id, 'Apologies, Sir. I could not download that photo. Please try sending it again.');
+        return;
+      }
+      const mime = isJpeg(image) ? 'image/jpeg' : isPng(image) ? 'image/png' : undefined;
+      if (!mime) {
+        await deps.sender.sendText(msg.chat.id, 'Sir, I can read JPEG and PNG photos only.');
+        return;
+      }
+      const reply = await deps.respond(caption, { channel: 'telegram', chatId: fromId }, [{ mime, data: image }]);
+      const sent = await deps.sender.sendText(msg.chat.id, reply);
+      await deps.store.saveOutbound(`out-${sent.messageId}`, fromId, reply);
+      return;
+    }
+
     if (!text) {
-      await deps.sender.sendText(
-        msg.chat.id,
-        'Sir, I can only handle text messages at the moment. Voice notes and documents are coming soon.',
-      );
+      await deps.sender.sendText(msg.chat.id, 'Sir, I can read text and photos for now. Voice notes and other files are coming soon.');
       return;
     }
     if (text === '/start') {
