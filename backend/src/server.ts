@@ -41,6 +41,7 @@ import { logger } from './utils/logger';
 
 async function main() {
   const config = loadConfig();
+  for (const w of config.warnings) logger.warn(`Config: ${w}`);
   await connectDatabase(config.mongoUri, config.dnsServers);
   // Keep DB indexes in line with the schemas (drops stale ones left by older versions).
   await Promise.all([MessageModel.syncIndexes(), ReminderModel.syncIndexes(), JobRunModel.syncIndexes(), SeenArticleModel.syncIndexes(), MemoryModel.syncIndexes()]);

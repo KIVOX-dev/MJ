@@ -11,9 +11,18 @@ describe('config with blank optional values', () => {
     expect(c.crawlitUrl).toBeUndefined();
   });
 
-  it('still rejects wrong non-blank values', () => {
-    expect(() => loadConfig({ ...base, WEB_API_TOKEN: 'short' })).toThrow(/WEB_API_TOKEN/);
-    expect(() => loadConfig({ ...base, OWNER_EMAIL: 'not-an-email' })).toThrow(/OWNER_EMAIL/);
+  it('disables an add-on with a warning when its value is wrong, instead of crashing the bot', () => {
+    const c = loadConfig({ ...base, WEB_API_TOKEN: 'short', OWNER_EMAIL: 'not-an-email', BREVO_API_KEY: 'key' });
+    expect(c.webApiToken).toBeUndefined();
+    expect(c.email.ownerEmail).toBeUndefined();
+    expect(c.email.brevoApiKey).toBe('key');
+    expect(c.warnings.join(' ')).toMatch(/WEB_API_TOKEN/);
+    expect(c.warnings.join(' ')).toMatch(/OWNER_EMAIL/);
+  });
+
+  it('still fails when a core setting is wrong, even if an add-on is wrong too', () => {
+    expect(() => loadConfig({ ...base, PORT: 'abc', WEB_API_TOKEN: 'short' })).toThrow(/PORT/);
+    expect(() => loadConfig({ ...base, NEWS_DIGEST_TIME: '8am' })).toThrow(/NEWS_DIGEST_TIME/);
   });
 
   it('still requires the mandatory variables', () => {

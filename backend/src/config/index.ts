@@ -41,6 +41,9 @@ const schema = z.object({
   GROQ_MODELS: z.string().default('openai/gpt-oss-120b,qwen/qwen3.8-27b,openai/gpt-oss-20b'),
 });
 
+/** Optional add-ons: a bad value here disables the add-on instead of stopping the server. */
+const OPTIONAL_ADDONS = new Set(['WEB_API_TOKEN', 'BREVO_API_KEY', 'BREVO_SENDER_EMAIL', 'BREVO_SENDER_NAME', 'OWNER_EMAIL', 'CRAWLIT_URL', 'CRAWLIT_TOKEN']);
+
 const list = (s: string) => s.split(',').map((x) => x.trim()).filter(Boolean);
 
 export type Config = ReturnType<typeof loadConfig>;
@@ -48,19 +51,37 @@ export type Config = ReturnType<typeof loadConfig>;
 export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
   // A blank value (e.g. "BREVO_API_KEY=" left in .env or the console) means "not set", not an invalid value.
   const cleaned = Object.fromEntries(Object.entries(env).filter(([, v]) => v === undefined || v.trim() !== ''));
-  const parsed = schema.safeParse(cleaned);
+  let parsed = schema.safeParse(cleaned);
+  // A wrong value in an optional add-on (web app, email, Crawlit) must not take the whole bot down:
+  // drop just that add-on, keep running, and report it in `warnings` (logged at startup).
+  const warnings: string[] = [];
+  if (!parsed.success) {
+    const bad = parsed.error.issues.map((i) => String(i.path[0]));
+    if (bad.every((k) => OPTIONAL_ADDONS.has(k))) {
+      for (const issue of parsed.error.issues) warnings.push(`${issue.path.join('.')}: ${issue.message} (that feature is disabled)`);
+      for (const k of bad) delete cleaned[k];
+      parsed = schema.safeParse(cleaned);
+    }
+  }
   if (!parsed.success) {
     const issues = parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ');
     throw new Error(`Invalid environment configuration: ${issues}`);
   }
   const e = parsed.data;
-  if (e.CRAWLIT_URL) {
-    const u = new URL(e.CRAWLIT_URL);
+  let crawlitUrl = e.CRAWLIT_URL;
+  if (crawlitUrl) {
+    const u = new URL(crawlitUrl);
     const local = ['localhost', '127.0.0.1', '::1', '[::1]'].includes(u.hostname);
-    if (!local && u.protocol !== 'https:') throw new Error('Invalid environment configuration: CRAWLIT_URL must use https:// unless it is localhost');
-    if (!local && !e.CRAWLIT_TOKEN) throw new Error('Invalid environment configuration: a remote CRAWLIT_URL requires CRAWLIT_TOKEN');
+    if (!local && u.protocol !== 'https:') {
+      warnings.push('CRAWLIT_URL must use https:// unless it is localhost (Crawlit is disabled)');
+      crawlitUrl = undefined;
+    } else if (!local && !e.CRAWLIT_TOKEN) {
+      warnings.push('A remote CRAWLIT_URL requires CRAWLIT_TOKEN (Crawlit is disabled)');
+      crawlitUrl = undefined;
+    }
   }
   return {
+    warnings,
     env: e.NODE_ENV,
     // On Catalyst AppSail the platform provides the port to bind to.
     port: e.X_ZOHO_CATALYST_LISTEN_PORT ?? e.PORT,
@@ -81,7 +102,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
     },
     publicBaseUrl: e.PUBLIC_BASE_URL?.replace(/\/+$/, ''),
     jobsSecret: e.JOBS_SECRET,
-    crawlitUrl: e.CRAWLIT_URL,
+    crawlitUrl,
     crawlitToken: e.CRAWLIT_TOKEN,
     webApiToken: e.WEB_API_TOKEN,
     email: { brevoApiKey: e.BREVO_API_KEY, senderEmail: e.BREVO_SENDER_EMAIL, senderName: e.BREVO_SENDER_NAME, ownerEmail: e.OWNER_EMAIL },

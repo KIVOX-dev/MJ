@@ -234,13 +234,19 @@ describe('Crawlit on a server: token and https rules', () => {
     expect(f.mock.calls[0]![1].headers.Authorization).toBeUndefined();
   });
 
-  it('config: a remote Crawlit must use https and a token; localhost may be plain http', async () => {
+  it('config: a remote Crawlit must use https and a token (otherwise it is disabled with a warning); localhost may be plain http', async () => {
     const { loadConfig } = await import('../src/config');
     const base = { MONGODB_URI: 'mongodb://x', GROQ_API_KEYS: 'k' } as Record<string, string>;
     const load = (extra: Record<string, string>) => loadConfig({ ...base, ...extra } as unknown as NodeJS.ProcessEnv);
-    expect(() => load({ CRAWLIT_URL: 'http://crawlit.example.com', CRAWLIT_TOKEN: 'a'.repeat(32) })).toThrow(/https/);
-    expect(() => load({ CRAWLIT_URL: 'https://crawlit.example.com' })).toThrow(/requires CRAWLIT_TOKEN/);
-    expect(() => load({ CRAWLIT_URL: 'https://crawlit.example.com', CRAWLIT_TOKEN: 'short' })).toThrow(/at least 16/);
+    const insecure = load({ CRAWLIT_URL: 'http://crawlit.example.com', CRAWLIT_TOKEN: 'a'.repeat(32) });
+    expect(insecure.crawlitUrl).toBeUndefined();
+    expect(insecure.warnings.join(' ')).toMatch(/https/);
+    const noToken = load({ CRAWLIT_URL: 'https://crawlit.example.com' });
+    expect(noToken.crawlitUrl).toBeUndefined();
+    expect(noToken.warnings.join(' ')).toMatch(/requires CRAWLIT_TOKEN/);
+    const shortToken = load({ CRAWLIT_URL: 'https://crawlit.example.com', CRAWLIT_TOKEN: 'short' });
+    expect(shortToken.crawlitUrl).toBeUndefined();
+    expect(shortToken.warnings.join(' ')).toMatch(/at least 16/);
     expect(load({ CRAWLIT_URL: 'https://crawlit.example.com', CRAWLIT_TOKEN: 'a'.repeat(32) }).crawlitToken).toHaveLength(32);
     expect(load({ CRAWLIT_URL: 'http://localhost:3100' }).crawlitUrl).toBe('http://localhost:3100');
     expect(load({}).crawlitUrl).toBeUndefined();
