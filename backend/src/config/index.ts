@@ -46,7 +46,9 @@ const list = (s: string) => s.split(',').map((x) => x.trim()).filter(Boolean);
 export type Config = ReturnType<typeof loadConfig>;
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
-  const parsed = schema.safeParse(env);
+  // A blank value (e.g. "BREVO_API_KEY=" left in .env or the console) means "not set", not an invalid value.
+  const cleaned = Object.fromEntries(Object.entries(env).filter(([, v]) => v === undefined || v.trim() !== ''));
+  const parsed = schema.safeParse(cleaned);
   if (!parsed.success) {
     const issues = parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ');
     throw new Error(`Invalid environment configuration: ${issues}`);
