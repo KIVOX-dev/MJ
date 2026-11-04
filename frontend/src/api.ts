@@ -20,7 +20,8 @@ export function loadSettings(): Settings {
   } catch {
     /* storage unavailable: fall back to build defaults */
   }
-  return { url: (saved.url ?? env.VITE_API_URL ?? '').replace(/\/+$/, ''), token: saved.token ?? env.VITE_API_TOKEN ?? '' };
+  // The URL is never taken from the build: empty means this site's own /api (forwarded to the backend by vercel.json), which avoids CORS blocks.
+  return { url: (saved.url ?? '').replace(/\/+$/, ''), token: saved.token ?? env.VITE_API_TOKEN ?? '' };
 }
 
 export function saveSettings(s: Settings): void {

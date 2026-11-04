@@ -239,6 +239,17 @@ Reply "stop reminders" to stop these.` : text);
     corsOrigins: config.corsOrigins,
     extraRouters,
     features: () => ({
+      // names of settings only, never values: tells you what to fix when a feature is off
+      ...(registry.has('email_me')
+        ? {}
+        : {
+            emailMissing: [
+              ...(config.email.brevoApiKey ? [] : ['BREVO_API_KEY']),
+              ...(config.email.senderEmail ? [] : ['BREVO_SENDER_EMAIL']),
+              ...(config.email.ownerEmail ? [] : ['OWNER_EMAIL']),
+            ],
+          }),
+      configIssues: config.warnings.map((w) => /^([A-Z0-9_]+):/.exec(w)?.[1] ?? w.split(' ')[0]!),
       email: registry.has('email_me'),
       webChat: !!(config.webApiToken && tg.ownerId),
       telegram: !!tgClient,

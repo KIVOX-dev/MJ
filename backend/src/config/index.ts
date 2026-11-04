@@ -50,7 +50,12 @@ export type Config = ReturnType<typeof loadConfig>;
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
   // A blank value (e.g. "BREVO_API_KEY=" left in .env or the console) means "not set", not an invalid value.
-  const cleaned = Object.fromEntries(Object.entries(env).filter(([, v]) => v === undefined || v.trim() !== ''));
+  // Values are trimmed too: a stray space or newline pasted into a console must not invalidate a setting.
+  const cleaned = Object.fromEntries(
+    Object.entries(env)
+      .filter(([, v]) => v === undefined || v.trim() !== '')
+      .map(([k, v]) => [k, v === undefined ? v : v.trim()]),
+  );
   let parsed = schema.safeParse(cleaned);
   // A wrong value in an optional add-on (web app, email, Crawlit) must not take the whole bot down:
   // drop just that add-on, keep running, and report it in `warnings` (logged at startup).

@@ -29,3 +29,13 @@ describe('config with blank optional values', () => {
     expect(() => loadConfig({ GROQ_API_KEYS: 'k' } as NodeJS.ProcessEnv)).toThrow(/MONGODB_URI/);
   });
 });
+
+describe('config trimming', () => {
+  it('ignores stray whitespace around values', () => {
+    const c = loadConfig({ ...base, OWNER_EMAIL: '  me@example.com\n', BREVO_SENDER_EMAIL: 'sender@example.com ', BREVO_API_KEY: ' key \r\n' });
+    expect(c.email.ownerEmail).toBe('me@example.com');
+    expect(c.email.senderEmail).toBe('sender@example.com');
+    expect(c.email.brevoApiKey).toBe('key');
+    expect(c.warnings).toEqual([]);
+  });
+});
