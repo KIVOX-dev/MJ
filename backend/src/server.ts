@@ -18,7 +18,7 @@ import { MongoSeenRepo } from './jobs/seen.repo';
 import { SeenArticleModel } from './models/seen-article.model';
 import { NewsdataClient } from './modules/research-assistant/web-search/newsdata.client';
 import { registerNewsTools } from './modules/research-assistant/web-search/news.tools';
-import { NewsDigestService } from './modules/personal-secretary/briefing/news-digest.service';
+import { NewsDigestService, type DigestFile } from './modules/personal-secretary/briefing/news-digest.service';
 import { MongoJobRunRepo } from './jobs/job-run.repo';
 import { JobRunModel } from './models/job-run.model';
 import { MemoryService, MongoMemoryRepo } from './core/memory/memory.service';
@@ -26,6 +26,9 @@ import { registerMemoryTools } from './core/memory/memory.tools';
 import { CrawlitClient } from './modules/research-assistant/web-search/crawlit.client';
 import { registerWebTools } from './modules/research-assistant/web-search/web.tools';
 import { MemoryModel } from './models/memory.model';
+import type { DigestPayload } from './modules/personal-secretary/briefing/digest.types';
+import { renderEmailHtml } from './modules/communication-manager/email/template';
+import { registerNewspaperTools } from './modules/personal-secretary/briefing/newspaper.tools';
 import { renderNewspaperPdf } from './modules/personal-secretary/briefing/newspaper';
 import { sectionFeeds } from './modules/personal-secretary/briefing/section-feeds';
 import { startDispatcher } from './jobs/dispatcher';
@@ -75,8 +78,12 @@ async function main() {
   if (crawlit) void crawlit.health().then((ok) => (ok ? logger.info('Crawlit connected') : logger.warn('CRAWLIT_URL is set but Crawlit is not answering; falling back to the built-in page reader')));
   const em = config.email;
   let emailDrafts: EmailController | undefined;
+  let brevo: BrevoClient | undefined;
+  // eslint-disable-next-line prefer-const
+  let digest: NewsDigestService | undefined;
   if (em.brevoApiKey && em.senderEmail && em.ownerEmail) {
-    emailDrafts = registerEmailTools(registry, new BrevoClient({ apiKey: em.brevoApiKey, senderEmail: em.senderEmail, senderName: em.senderName }), em.ownerEmail, { ownerName: config.ownerName });
+    brevo = new BrevoClient({ apiKey: em.brevoApiKey, senderEmail: em.senderEmail, senderName: em.senderName });
+    emailDrafts = registerEmailTools(registry, brevo, em.ownerEmail, { ownerName: config.ownerName, newspaper: () => digest!.newspaperNow() });
     logger.info('Email enabled (Brevo): MJ can email the owner');
   } else if (em.brevoApiKey) {
     logger.warn('BREVO_API_KEY is set but BREVO_SENDER_EMAIL or OWNER_EMAIL is missing: email disabled');
@@ -205,6 +212,7 @@ Reply "stop reminders" to stop these.` : text);
         voices: voiceMenu,
         getImage: (id) => imageStore.get(id),
         emailDrafts,
+        newspaper: () => { if (!digest) throw new Error("newspaper off"); return digest.newspaperNow(); },
         sessions: new MongoSessionRepo(),
         storeFor: (sid) => new MongoMessageStore('telegram', sid),
         respondFor: (sid) => makeAgent('telegram', sid),
@@ -236,12 +244,45 @@ Reply "stop reminders" to stop these.` : text);
 
   // Daily news digest (prepared from 05:00, sent 08:00 Asia/Kolkata) and Tamil Nadu breaking-news alerts,
   // delivered to the owner on each configured channel.
-  let digest: NewsDigestService | undefined;
   let alerts: BreakingNewsService | undefined;
   const owners: Record<Channel, string | undefined> = { telegram: config.telegram.ownerId, whatsapp: config.whatsapp.ownerNumber };
   const recipients = config.news.digestChannels
     .filter((c): c is Channel => (c === 'telegram' || c === 'whatsapp') && !!senders[c] && !!owners[c])
     .map((channel) => ({ channel, chatId: owners[channel]! }));
+  const digestEmailText = (d: DigestPayload) =>
+    d.sections
+      .filter((x) => x.stories.length)
+      .map((x) => `${x.label}\n${x.stories.map((st) => `- ${st.summary}${st.source ? ` (${st.source})` : ''}`).join('\n')}`)
+      .join('\n\n') + '\n\nThe full MJ TIMES edition is attached as a PDF.';
+  /** The morning briefing also goes to the phone (push) and to the owner's email with the MJ TIMES PDF attached. */
+  const mailMorning = async (d: DigestPayload, file?: DigestFile) => {
+    if (!brevo || !em.ownerEmail) return;
+    const body = digestEmailText(d);
+    const subject = `MJ TIMES · ${d.date}`;
+    const html = renderEmailHtml(subject, body, { heading: 'Your morning briefing', preheader: 'Headlines, with the MJ TIMES PDF attached', date: d.date, audience: 'owner', ownerName: config.ownerName });
+    const ok = file && file.data.length <= 3_500_000;
+    await brevo.send(em.ownerEmail, subject, body, ok ? [{ name: file!.name, data: file!.data }] : [], html, { replyTo: em.ownerEmail, senderName: 'MJ TIMES' });
+  };
+  function morningExtras(): NonNullable<ConstructorParameters<typeof NewsDigestService>[0]['extras']> {
+    const x: NonNullable<ConstructorParameters<typeof NewsDigestService>[0]['extras']> = [
+      {
+        name: 'push',
+        deliver: async (d) => {
+          const top = d.sections.flatMap((s) => s.stories).slice(0, 3).map((st) => st.summary);
+          await push.send({
+            title: 'Your morning news briefing',
+            body: top[0] ?? 'Good morning, Sir.',
+            category: 'news',
+            url: '/',
+            tag: 'daily-news',
+            details: { description: top.join(' • '), source: 'MJ TIMES', published: d.date },
+          });
+        },
+      },
+    ];
+    if (brevo) x.push({ name: 'email', deliver: async (d, pdf) => mailMorning(d, await pdf()) });
+    return x;
+  }
   const notify = async (channel: Channel, chatId: string, text: string, meta?: AlertMeta) => {
     await senders[channel]!(chatId, text);
     // Breaking-news alerts and the first part of the morning briefing also go out as phone notifications.
@@ -254,8 +295,6 @@ Reply "stop reminders" to stop these.` : text);
         url: '/',
         details: meta ? { source: meta.source, description: meta.description, link: meta.link, published: meta.published } : undefined,
       });
-    } else if (text.startsWith('📰')) {
-      void push.send({ title: 'Your morning news briefing', body: 'Good morning, Sir. Today\'s headlines are ready in Telegram.', category: 'news', url: '/', tag: 'daily-news' });
     }
   };
   if (!recipients.length) {
@@ -275,9 +314,16 @@ Reply "stop reminders" to stop these.` : text);
         feeds: sectionFeeds(),
         // MJ TIMES PDF edition: only on channels that can carry files (Telegram)
         makePdf: (payload) => renderNewspaperPdf(payload),
+        extras: morningExtras(),
         sendFile: async (channel, chatId, file) => {
           if (channel === 'telegram' && tgClient) await tgClient.sendDocument(chatId, file.data, file.name, file.caption);
         },
+      });
+      registerNewspaperTools(registry, {
+        getPdf: () => digest!.newspaperNow(),
+        ...(brevo && em.ownerEmail
+          ? { emailToOwner: async (f: DigestFile) => { const d = await digest!.currentDigest(); await mailMorning(d, f); } }
+          : {}),
       });
       logger.info(
         { prepare: config.news.prepareTime, send: config.news.digestTime, channels: recipients.map((r) => r.channel) },

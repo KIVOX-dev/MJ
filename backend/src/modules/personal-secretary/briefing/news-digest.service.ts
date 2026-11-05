@@ -339,8 +339,15 @@ export class NewsDigestService {
       this.prepared = { key: prepKey, payload };
     }
     if (!payload.sections.some((s) => s.stories.length)) throw new Error('There are no stories to print yet');
+    this.prepared = { key: prepKey, payload };
     if (this.pdf?.key !== dateKey) this.pdf = { key: dateKey, data: await this.d.makePdf(payload) };
     return { name: `MJ-Times-${dateKey}.pdf`, data: this.pdf.data, caption: `MJ TIMES · ${payload.date}` };
+  }
+
+  /** The edition behind the newest newspaperNow() call (for emailing it as text next to the PDF). */
+  async currentDigest(): Promise<DigestPayload> {
+    if (!this.prepared) await this.newspaperNow();
+    return this.prepared!.payload;
   }
 
   /** Text-only convenience (used by previews and scripts). */
