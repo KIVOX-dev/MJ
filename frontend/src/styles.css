@@ -11,7 +11,7 @@ button, input, textarea, select { font: inherit; color: inherit; }
 button { cursor: pointer; }
 h1, h2, h3, h4, h5, p { margin: 0; }
 
-.app { height: 100dvh; display: flex; flex-direction: column; max-width: 640px; margin: 0 auto; background: var(--bg); position: relative; }
+.app { height: 100dvh; overflow: hidden; display: flex; flex-direction: column; max-width: 640px; margin: 0 auto; background: var(--bg); position: relative; }
 
 /* ---- top bar ---- */
 .top { display: flex; align-items: center; gap: 2px; padding: calc(env(safe-area-inset-top) + 6px) 8px 6px; background: var(--bg); border-bottom: 1px solid var(--line); }
@@ -28,7 +28,7 @@ h1, h2, h3, h4, h5, p { margin: 0; }
 .badge.inline { position: static; margin-left: auto; }
 
 /* ---- messages ---- */
-.stream { flex: 1; overflow-y: auto; overscroll-behavior: contain; padding: 18px 16px 10px; display: flex; flex-direction: column; gap: 18px; -webkit-overflow-scrolling: touch; }
+.stream { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 18px 16px 10px; display: flex; flex-direction: column; gap: 18px; -webkit-overflow-scrolling: touch; }
 .row { display: flex; gap: 10px; animation: in .18s ease-out; max-width: 100%; }
 .row.me { justify-content: flex-end; }
 .row.ai { align-items: flex-start; }
@@ -234,3 +234,28 @@ h1, h2, h3, h4, h5, p { margin: 0; }
 @keyframes sweep { to { transform: translateX(110%); } }
 .creating-label { position: absolute; left: 14px; bottom: 12px; z-index: 2; font-size: 13px; font-weight: 700; color: #4b3fa0; background: rgba(255,255,255,.7); backdrop-filter: blur(6px); padding: 5px 10px; border-radius: 999px; animation: in .4s ease-out; }
 @media (prefers-reduced-motion: reduce) { .creating .blob, .creating::after { animation: none !important; } .md img.gen-img { filter: none; opacity: 1; transform: none; } }
+
+/* the start screen must never push the message box off a short phone screen */
+.composer, .pending, .speaking { flex: none; }
+@media (max-height: 700px) { .hello img { width: 48px; height: 48px; margin-bottom: 8px; } .hello h2 { font-size: 1.25rem; } .hello p { margin-bottom: 12px; } .chip { min-height: 58px; padding: 8px 12px; } }
+
+/* ---- voice mode refinements ---- */
+.voice-captions .said { margin: 0; font-size: 19px; line-height: 1.55; font-weight: 500; }
+.voice-captions .spoken { color: var(--text); }
+.voice-captions .unspoken { color: #a2a2ad; }
+.voice-captions .draft { text-align: left; margin: 4px auto 0; width: 100%; }
+.voice-pics img.gen-img { margin: 4px auto; }
+.vbtn.on { background: var(--accent); color: #fff; border-color: transparent; }
+.voice-hint { margin: 8px 0 0; font-size: 12px; color: var(--muted); text-align: center; max-width: 320px; }
+.voice-bar { gap: 22px; }
+.orb-wrap { margin-top: 2vh; width: 230px; height: 230px; }
+.orb { width: 170px; height: 170px; }
+@media (max-height: 700px) { .orb-wrap { width: 170px; height: 170px; } .orb { width: 124px; height: 124px; } }
+
+/* ---- confirm the receiver on an email draft ---- */
+.draft-receiver { display: flex; flex-direction: column; gap: 8px; padding: 10px; border-radius: 14px; background: rgba(91,61,245,.07); }
+.draft-receiver label { font-size: 13px; font-weight: 600; color: var(--muted); display: flex; flex-direction: column; gap: 6px; }
+.draft-confirm { height: 46px; border: 0; border-radius: 12px; background: var(--accent); color: #fff; font-weight: 700; display: inline-flex; align-items: center; justify-content: center; gap: 8px; }
+.draft-confirm:disabled { opacity: .45; }
+.draft-ok { display: inline-flex; align-items: center; gap: 4px; margin-left: 8px; color: var(--ok); font-size: 12px; font-weight: 600; }
+.draft-change { margin-left: 8px; border: 0; background: transparent; color: var(--accent); font-weight: 600; font-size: 13px; text-decoration: underline; padding: 4px; }

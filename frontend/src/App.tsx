@@ -200,7 +200,7 @@ export function App() {
 
   // ---- sending ----
   const send = useCallback(
-    async (raw: string, opts: { quiet?: boolean } = {}): Promise<string | undefined> => {
+    async (raw: string, opts: { quiet?: boolean; voice?: boolean } = {}): Promise<string | undefined> => {
       const q = raw.trim();
       if ((!q && !files.length) || busy) return undefined;
       if (!settings.token) {
@@ -221,7 +221,7 @@ export function App() {
         { id: uid(), role: 'user', text: q, at: Date.now(), files: sending.length ? sending.map((f) => ({ name: f.name, mime: f.mime, preview: f.preview })) : undefined },
       ]);
       try {
-        const reply = await sendChat(settings, q, sid, sending.map(({ name, mime, data }) => ({ name, mime, data })));
+        const reply = await sendChat(settings, q, sid, sending.map(({ name, mime, data }) => ({ name, mime, data })), { voice: opts.voice });
         setStatus('online');
         const id = uid();
         put(sid, (m) => [...m, { id, role: 'assistant', text: reply, at: Date.now() }]);
@@ -609,7 +609,7 @@ export function App() {
         )}
       </form>
 
-      {voiceOpen && <VoiceMode settings={settings} ask={(t) => send(t, { quiet: true })} onClose={() => setVoiceOpen(false)} />}
+      {voiceOpen && <VoiceMode settings={settings} ask={(t) => send(t, { quiet: true, voice: true })} onClose={() => setVoiceOpen(false)} />}
 
       {lightbox && (
         <div className="lightbox" onClick={() => setLightbox(null)}>

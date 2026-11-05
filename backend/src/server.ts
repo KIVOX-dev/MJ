@@ -12,6 +12,7 @@ import { MongoReminderRepo } from './modules/personal-secretary/reminders/remind
 import { ReminderService } from './modules/personal-secretary/reminders/reminder.service';
 import { registerReminderTools } from './modules/personal-secretary/reminders/reminder.tools';
 import { CompositeNewsSource, GoogleNewsSource, THE_HINDU_TN, googleNewsFeed } from './modules/research-assistant/web-search/rss';
+import type { AlertMeta } from './modules/research-assistant/web-search/breaking-news.service';
 import { BreakingNewsService } from './modules/research-assistant/web-search/breaking-news.service';
 import { MongoSeenRepo } from './jobs/seen.repo';
 import { SeenArticleModel } from './models/seen-article.model';
@@ -241,12 +242,18 @@ Reply "stop reminders" to stop these.` : text);
   const recipients = config.news.digestChannels
     .filter((c): c is Channel => (c === 'telegram' || c === 'whatsapp') && !!senders[c] && !!owners[c])
     .map((channel) => ({ channel, chatId: owners[channel]! }));
-  const notify = async (channel: Channel, chatId: string, text: string) => {
+  const notify = async (channel: Channel, chatId: string, text: string, meta?: AlertMeta) => {
     await senders[channel]!(chatId, text);
     // Breaking-news alerts and the first part of the morning briefing also go out as phone notifications.
     if (text.startsWith('🚨')) {
       const headline = text.split('\n\n')[1] ?? text;
-      void push.send({ title: 'Tamil Nadu alert', body: headline, category: 'alert', url: '/', tag: undefined });
+      void push.send({
+        title: 'Tamil Nadu alert',
+        body: meta?.headline ?? headline,
+        category: 'alert',
+        url: '/',
+        details: meta ? { source: meta.source, description: meta.description, link: meta.link, published: meta.published } : undefined,
+      });
     } else if (text.startsWith('📰')) {
       void push.send({ title: 'Your morning news briefing', body: 'Good morning, Sir. Today\'s headlines are ready in Telegram.', category: 'news', url: '/', tag: 'daily-news' });
     }

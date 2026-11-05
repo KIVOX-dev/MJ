@@ -21,6 +21,8 @@ export interface WebChatDeps {
   ownerChatId: string;
   /** Speech-to-text for voice messages; the /api/transcribe route is only offered when this is set. */
   transcribe?: (audio: Buffer, mime: string, language?: string) => Promise<string>;
+  /** Today's MJ TIMES PDF, for the download button and for "send me the newspaper". */
+  newspaper?: () => Promise<{ name: string; data: Buffer }>;
   /** Sends or discards email drafts when Sir taps the buttons on a draft card. */
   emailDrafts?: EmailController;
   /** Reads a generated picture by id (the id is random and unguessable, so the image link needs no token). */
@@ -157,7 +159,7 @@ export function webChatRouter(deps: WebChatDeps): Router {
 
   r.post('/api/chat', json({ limit: '16mb' }), async (req, res) => {
     // "query" matches the older MJ-CHAT-BOT UI; "message" is accepted too.
-    const raw = (req.body ?? {}) as { query?: unknown; message?: unknown; session_id?: unknown; attachments?: unknown };
+    const raw = (req.body ?? {}) as { query?: unknown; message?: unknown; session_id?: unknown; attachments?: unknown; voice?: unknown };
     const typed = String(raw.query ?? raw.message ?? '').trim();
     const parsedFiles = z.array(attachmentSchema).max(MAX_ATTACHMENTS).safeParse(raw.attachments ?? []);
     if (!parsedFiles.success) return void res.status(400).json({ error: `Up to ${MAX_ATTACHMENTS} files, each with a name and content.` });
@@ -182,12 +184,15 @@ export function webChatRouter(deps: WebChatDeps): Router {
       await chat.store.claimInbound(id, deps.ownerChatId, stored || text, 'text');
       // Reminders, memory and tools always act for the owner, whichever chat the message came from.
       const pictures: string[] = [];
-      const draftCards: Array<{ id: string; to: string; subject: string; body: string }> = [];
+      const draftCards: Array<{ id: string; to: string; subject: string; body: string; attachNewspaper?: boolean }> = [];
+      const fileCards: Array<{ name: string; path: string }> = [];
       const who = {
         channel: 'telegram' as const,
         chatId: deps.ownerChatId,
+        ...(raw.voice === true ? { voice: true } : {}),
         ...(deps.getImage ? { onImage: (pid: string) => void pictures.push(pid) } : {}),
-        ...(deps.emailDrafts ? { onDraft: (d: { id: string; to: string; subject: string; body: string }) => void draftCards.push(d) } : {}),
+        ...(deps.emailDrafts ? { onDraft: (d: { id: string; to: string; subject: string; body: string; attachNewspaper?: boolean }) => void draftCards.push(d) } : {}),
+        ...(deps.newspaper ? { onFile: (f: { name: string; path: string }) => void fileCards.push(f) } : {}),
       };
       const answer = files.labels.length
         ? await chat.respond(text, who, files.images.length ? files.images : undefined, files.documents.length ? files.documents : undefined)
@@ -195,7 +200,8 @@ export function webChatRouter(deps: WebChatDeps): Router {
       // Pictures made during this turn go under the reply as Markdown images (the app shows them as cards).
       // A draft becomes a card in the app (a fenced block it renders with Send / Discard buttons). Backticks are escaped so the text cannot break the fence.
       const cards = draftCards.map((d) => `\n\n\`\`\`mj-email\n${JSON.stringify(d).replace(/`/g, '\\u0060')}\n\`\`\``).join('');
-      const reply = answer + pictures.map((pid) => `\n\n![Generated image](/api/images/${pid})`).join('') + cards;
+      const fileFences = fileCards.map((f) => `\n\n\`\`\`mj-file\n${JSON.stringify(f).replace(/`/g, '\\u0060')}\n\`\`\``).join('');
+      const reply = answer + pictures.map((pid) => `\n\n![Generated image](/api/images/${pid})`).join('') + fileFences + cards;
       await chat.store.saveOutbound(`out-${id}`, deps.ownerChatId, reply);
       if (chat.id && deps.sessions) {
         await deps.sessions.autoTitle(chat.id, text);
@@ -283,17 +289,34 @@ export function webChatRouter(deps: WebChatDeps): Router {
     });
   }
 
+  // ---- the newspaper ----
+  if (deps.newspaper) {
+    const paper = deps.newspaper;
+    r.get('/api/newspaper.pdf', async (_req, res) => {
+      try {
+        const f = await paper();
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', `inline; filename="${f.name.replace(/[^\w.-]/g, '_')}"`);
+        res.setHeader('Cache-Control', 'private, max-age=300');
+        res.send(f.data);
+      } catch (err) {
+        logger.warn({ err: { message: (err as Error).message } }, 'Newspaper download failed');
+        res.status(503).json({ error: 'newspaper_unavailable' });
+      }
+    });
+  }
+
   // ---- email draft buttons ----
   if (deps.emailDrafts) {
     const mail = deps.emailDrafts;
     const sendLimit = rateLimit({ windowMs: 60_000, limit: 10, standardHeaders: true, legacyHeaders: false });
     r.post('/api/email/send', sendLimit, json({ limit: '64kb' }), async (req, res) => {
       const p = z
-        .object({ draft_id: z.string().min(4).max(20), subject: z.string().trim().min(1).max(200).optional(), body: z.string().trim().min(1).max(10000).optional() })
+        .object({ draft_id: z.string().min(4).max(20), attach_newspaper: z.boolean().optional(), to: z.string().trim().email().max(200).optional(), subject: z.string().trim().min(1).max(200).optional(), body: z.string().trim().min(1).max(10000).optional() })
         .safeParse(req.body);
       if (!p.success) return void res.status(400).json({ error: 'A draft id is required.' });
       try {
-        res.json(await mail.send(p.data.draft_id, { subject: p.data.subject, body: p.data.body }));
+        res.json(await mail.send(p.data.draft_id, { to: p.data.to, subject: p.data.subject, body: p.data.body, attachNewspaper: p.data.attach_newspaper }));
       } catch (err) {
         // expected problems (expired draft, daily limit, mail service refusing) are shown to Sir as they are
         logger.warn({ err: { message: (err as Error).message } }, 'Email send from the app failed');

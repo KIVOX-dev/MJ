@@ -257,3 +257,26 @@ describe('web chat sessions', () => {
     expect((await request(app).get('/api/history?session_id=nope').set(auth)).status).toBe(404);
   });
 });
+
+describe('notification details', () => {
+  it('keeps only short text and real web links', async () => {
+    const { cleanDetails } = await import('../src/modules/communication-manager/push/push.service');
+    expect(cleanDetails(undefined)).toBeUndefined();
+    expect(cleanDetails({})).toBeUndefined();
+    expect(cleanDetails({ link: 'javascript:alert(1)', description: '<script>x</script>' })).toEqual({ description: 'x' });
+    const d = cleanDetails({ source: 'The Hindu', description: '<p>Heavy   rain</p> is <b>expected</b>.', link: 'https://www.thehindu.com/news/a-1.ece', published: 'Thu, 05 Nov 2026 09:00:00 GMT' })!;
+    expect(d).toEqual({ source: 'The Hindu', description: 'Heavy rain is expected.', link: 'https://www.thehindu.com/news/a-1.ece', published: 'Thu, 05 Nov 2026 09:00:00 GMT' });
+    expect(cleanDetails({ description: 'x'.repeat(900) })!.description).toHaveLength(500);
+  });
+
+  it('stores details with the notification for the app, but never puts them in the push message', async () => {
+    const repo = fakeRepo();
+    await repo.saveSub(sub('a.example'));
+    const sender = vi.fn().mockResolvedValue(undefined);
+    const svc = new PushService(repo, sender, 'P');
+    await svc.send({ title: 'Tamil Nadu alert', body: 'Heavy rain for eight districts', category: 'alert', details: { source: 'The Hindu', description: 'More text', link: 'https://example.com/a' } });
+    expect(repo.notes[0]!.details).toEqual({ source: 'The Hindu', description: 'More text', link: 'https://example.com/a' });
+    expect(JSON.parse(sender.mock.calls[0]![1] as string)).not.toHaveProperty('details');
+    expect((await svc.list(5))[0]!.details?.source).toBe('The Hindu');
+  });
+});

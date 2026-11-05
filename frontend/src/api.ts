@@ -88,11 +88,11 @@ const post = (body: unknown): RequestInit => ({ method: 'POST', body: JSON.strin
 const sid = (id: string) => (id === 'main' ? '' : `&session_id=${encodeURIComponent(id)}`);
 
 // ---- chat ----
-export async function sendChat(s: Settings, text: string, sessionId: string, attachments: Attachment[] = []): Promise<string> {
+export async function sendChat(s: Settings, text: string, sessionId: string, attachments: Attachment[] = [], opts: { voice?: boolean } = {}): Promise<string> {
   const j = await call<{ reply?: string; answer?: string }>(
     s,
     '/api/chat',
-    post({ query: text, ...(sessionId !== 'main' ? { session_id: sessionId } : {}), ...(attachments.length ? { attachments } : {}) }),
+    post({ query: text, ...(sessionId !== 'main' ? { session_id: sessionId } : {}), ...(attachments.length ? { attachments } : {}), ...(opts.voice ? { voice: true } : {}) }),
   );
   const reply = j.reply ?? j.answer;
   if (typeof reply !== 'string') throw new Error('The server sent an unexpected reply.');
@@ -162,6 +162,6 @@ export async function fetchSpeech(s: Settings, text: string, voice: string): Pro
 }
 
 /** Sends an email draft through the server (Brevo) after Sir taps Send. Subject and text may have been edited on the card. */
-export const sendDraft = (s: Settings, id: string, edits?: { subject?: string; body?: string }) =>
+export const sendDraft = (s: Settings, id: string, edits?: { to?: string; subject?: string; body?: string }) =>
   call<{ sent_to: string }>(s, '/api/email/send', post({ draft_id: id, ...edits }));
 export const discardDraft = (s: Settings, id: string) => call<{ discarded: boolean }>(s, '/api/email/discard', post({ draft_id: id }));

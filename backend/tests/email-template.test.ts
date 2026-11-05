@@ -96,7 +96,7 @@ describe('emailing other people needs confirmation', () => {
     expect([to, subject, text]).toEqual(['friend@example.com', 'Hello', 'hi hello']);
     expect(opts).toEqual({ replyTo: 'owner@example.com', senderName: 'Sir via MJ' });
     expect(html).not.toContain('Good day, Sir');
-    expect(html).toContain('on behalf of Sir');
+    expect(html).toMatch(/on behalf of <strong[^>]*>Sir<\/strong>/);
     // a draft can only be sent once
     expect((await run('send_drafted_email', { draft_id: d.draft_id }, 'turn-3')).ok).toBe(false);
     expect(send).toHaveBeenCalledTimes(1);
@@ -104,7 +104,10 @@ describe('emailing other people needs confirmation', () => {
 
   it('rejects bad addresses, unknown drafts, and enforces the daily limit', async () => {
     const { send, run } = await setup(1);
-    expect((await run('draft_email', { ...draftArgs, to: 'not-an-email' }, 't1')).ok).toBe(false);
+    // a receiver that is not a real address still makes a draft (Sir types it on the card), but it cannot be sent without one
+    const blank = (await run('draft_email', { ...draftArgs, to: 'not-an-email' }, 't1')) as unknown as { ok: boolean; draft_id: string };
+    expect(blank.ok).toBe(true);
+    expect((await run('send_drafted_email', { draft_id: blank.draft_id }, 't1b')).ok).toBe(false);
     expect((await run('send_drafted_email', { draft_id: 'deadbeef' }, 't2')).ok).toBe(false);
     const a = (await run('draft_email', draftArgs, 't3')) as unknown as { draft_id: string };
     expect((await run('send_drafted_email', { draft_id: a.draft_id }, 't4')).ok).toBe(true);

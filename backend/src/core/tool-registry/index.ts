@@ -13,7 +13,11 @@ export interface ToolContext {
   /** Hands a generated picture (by id) to the chat layer, which shows it to the user. Absent on chats that cannot show pictures. */
   onImage?: (imageId: string) => void;
   /** Shows an email draft to the user with Send and Discard buttons. Absent on chats without buttons. */
-  onDraft?: (draft: { id: string; to: string; subject: string; body: string }) => void;
+  onDraft?: (draft: { id: string; to: string; subject: string; body: string; attachNewspaper?: boolean }) => void;
+  /** Shows a file (for example today's newspaper PDF) under the reply. Absent on chats that cannot show files. */
+  onFile?: (file: { name: string; path: string }) => void;
+  /** True in voice mode: Sir is talking out loud and the reply will be spoken. */
+  voice?: boolean;
 }
 
 export interface ToolDef<S extends z.ZodObject = z.ZodObject> {

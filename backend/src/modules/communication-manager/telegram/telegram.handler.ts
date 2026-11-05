@@ -145,16 +145,23 @@ export async function processTelegramUpdate(update: TgUpdate, deps: TelegramHand
     const fromId = String(msg.from.id);
     // Pictures the assistant generates while answering are sent right after the text reply.
     const generated: string[] = [];
-    const drafted: Array<{ id: string; to: string; subject: string; body: string }> = [];
+    const drafted: Array<{ id: string; to: string; subject: string; body: string; attachNewspaper?: boolean }> = [];
+    let wantsPaper = false;
     const rctx: AgentContext = {
       channel: 'telegram',
       chatId: fromId,
       ...(deps.getImage ? { onImage: (pid: string) => void generated.push(pid) } : {}),
-      ...(deps.emailDrafts ? { onDraft: (d: { id: string; to: string; subject: string; body: string }) => void drafted.push(d) } : {}),
+      ...(deps.emailDrafts ? { onDraft: (d: { id: string; to: string; subject: string; body: string; attachNewspaper?: boolean }) => void drafted.push(d) } : {}),
+      ...(deps.sendNewspaper ? { onFile: () => void (wantsPaper = true) } : {}),
+    };
+    const sendPaper = async () => {
+      if (!wantsPaper) return;
+      wantsPaper = false;
+      await deps.sendNewspaper?.(msg.chat.id).catch((e: Error) => logger.warn({ err: { message: e.message } }, 'Could not send the newspaper'));
     };
     const sendDrafts = async () => {
       for (const d of drafted.splice(0)) {
-        await deps.sender.sendText(msg.chat.id, `✉️ Draft email\n\nTo: ${d.to}\nSubject: ${d.subject}\n\n${d.body}`, {
+        await deps.sender.sendText(msg.chat.id, `✉️ Draft email\n\nTo: ${d.to}\nSubject: ${d.subject}\n\n${d.body}${d.attachNewspaper ? '\n\n📎 Today\'s MJ TIMES (PDF) will be attached' : ''}`, {
           buttons: [
             { text: '✅ Send', data: `mail:send:${d.id}` },
             { text: '🗑 Discard', data: `mail:drop:${d.id}` },
@@ -217,6 +224,7 @@ export async function processTelegramUpdate(update: TgUpdate, deps: TelegramHand
       const reply = await deps.respond(caption, rctx, [{ mime, data: image }]);
       const sent = await deps.sender.sendText(msg.chat.id, reply);
       await sendImages();
+      await sendPaper();
       await sendDrafts();
       await deps.store.saveOutbound(`out-${sent.messageId}`, fromId, reply);
       return;
@@ -246,6 +254,7 @@ export async function processTelegramUpdate(update: TgUpdate, deps: TelegramHand
       const reply = await deps.respond(caption, rctx, undefined, [{ name: docInfo.name, text: body }]);
       const sent = await deps.sender.sendText(msg.chat.id, reply);
       await sendImages();
+      await sendPaper();
       await sendDrafts();
       await deps.store.saveOutbound(`out-${sent.messageId}`, fromId, reply);
       return;
@@ -280,6 +289,7 @@ export async function processTelegramUpdate(update: TgUpdate, deps: TelegramHand
       const reply = await deps.respond(said, rctx);
       const sent = await deps.sender.sendText(msg.chat.id, reply);
       await sendImages();
+      await sendPaper();
       await sendDrafts();
       await deps.store.saveOutbound(`out-${sent.messageId}`, fromId, reply);
       return;
@@ -309,6 +319,7 @@ export async function processTelegramUpdate(update: TgUpdate, deps: TelegramHand
     const reply = await deps.respond(text, rctx);
     const sent = await deps.sender.sendText(msg.chat.id, reply);
       await sendImages();
+      await sendPaper();
       await sendDrafts();
     await deps.store.saveOutbound(`out-${sent.messageId}`, fromId, reply);
   } catch (err) {

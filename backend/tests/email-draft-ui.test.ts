@@ -41,7 +41,7 @@ describe('email drafts with a Send button', () => {
     const [to, subject, , , html, opts] = send.mock.calls[0]!;
     expect([to, subject]).toEqual(['friend@example.com', 'Hello']);
     expect(opts).toEqual({ replyTo: 'owner@example.com', senderName: 'Kaviarasan M via MJ' });
-    expect(html).toContain('on behalf of Kaviarasan M');
+    expect(html).toMatch(/on behalf of <strong[^>]*>Kaviarasan M<\/strong>/);
     expect(html).not.toContain('Good day, Sir');
     await expect(controller.send(drafts[0]!.id)).rejects.toThrow(/expired or was already sent/);
     expect(send).toHaveBeenCalledTimes(1);
@@ -142,5 +142,85 @@ describe('draft buttons in Telegram', () => {
     await processTelegramUpdate(press(555, 'mail:drop:ab12cd34'), deps);
     expect(discard).toHaveBeenCalledWith('ab12cd34');
     expect(send).not.toHaveBeenCalled();
+  });
+});
+
+describe('emailing by voice needs the receiver confirmed on screen', () => {
+  const voiceCtx = (onDraft?: (d: Draft) => void) => ({ channel: 'telegram' as const, chatId: '1', timezone: 'Asia/Kolkata', now: () => new Date(), turnId: 'v1', voice: true, onDraft });
+
+  function setupVoice() {
+    const send = vi.fn().mockResolvedValue({ messageId: 'm1' });
+    const registry = new ToolRegistry();
+    const controller = registerEmailTools(registry, { send } as never, 'owner@example.com', { ownerName: 'Kaviarasan M' });
+    const drafts: Draft[] = [];
+    const draft = (to: string) => registry.execute('draft_email', JSON.stringify({ to, subject: 'Hello', body: 'Hi there.\n[Your Name]' }), voiceCtx((d) => void drafts.push(d)));
+    return { send, controller, drafts, draft, registry };
+  }
+
+  it('tells the assistant to read it out and have Sir confirm and tap Send, never to send it itself', async () => {
+    const { draft, drafts } = setupVoice();
+    const r = (await draft('friend@example.com')) as unknown as { next: string; receiver_known: boolean };
+    expect(r.receiver_known).toBe(true);
+    expect(r.next).toMatch(/voice mode/i);
+    expect(r.next).toMatch(/Do NOT call send_drafted_email/);
+    expect(drafts[0]!.to).toBe('friend@example.com');
+  });
+
+  it('a heard address that is not a real address becomes blank so Sir types it, and cannot be sent blank', async () => {
+    const { draft, drafts, controller, send } = setupVoice();
+    const r = (await draft('kaviarasan at skasc dot ac dot in')) as unknown as { next: string; receiver_known: boolean };
+    expect(r.receiver_known).toBe(false);
+    expect(r.next).toMatch(/blank/);
+    expect(drafts[0]!.to).toBe('');
+    await expect(controller.send(drafts[0]!.id)).rejects.toThrow(/receiver email address/);
+    await expect(controller.send(drafts[0]!.id, { to: 'not-an-email' })).rejects.toThrow(/receiver email address/);
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it('Sir confirms the receiver on the card: the confirmed address is the one that is used', async () => {
+    const { draft, drafts, controller, send } = setupVoice();
+    await draft('wrong.heard@example.com');
+    const out = await controller.send(drafts[0]!.id, { to: '  Right.Address@Example.com ' });
+    expect(out).toEqual({ sent_to: 'right.address@example.com' });
+    expect(send.mock.calls[0]![0]).toBe('right.address@example.com');
+    expect(send.mock.calls[0]![2]).toContain('Kaviarasan M');
+  });
+
+  it('the assistant cannot send a draft made by voice, even in a later turn', async () => {
+    const { draft, drafts, registry, send } = setupVoice();
+    await draft('friend@example.com');
+    const later = await registry.execute('send_drafted_email', JSON.stringify({ draft_id: drafts[0]!.id }), { ...voiceCtx(), turnId: 'v2' });
+    expect(later.ok).toBe(false);
+    expect((later as { error: string }).error).toMatch(/made by voice/);
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it('the app route accepts the confirmed receiver and rejects a malformed one', async () => {
+    const { controller } = setupVoice();
+    const sendSpy = vi.spyOn(controller, 'send').mockResolvedValue({ sent_to: 'ok@example.com' });
+    const app = createApp({ isDbConnected: () => true, extraRouters: [webChatRouter({ token: TOKEN, respond: vi.fn() as never, store, ownerChatId: '1', emailDrafts: controller })] });
+    const auth = { Authorization: `Bearer ${TOKEN}` };
+    expect((await request(app).post('/api/email/send').set(auth).send({ draft_id: 'ab12cd34', to: 'ok@example.com' })).status).toBe(200);
+    expect(sendSpy).toHaveBeenCalledWith('ab12cd34', { to: 'ok@example.com', subject: undefined, body: undefined });
+    expect((await request(app).post('/api/email/send').set(auth).send({ draft_id: 'ab12cd34', to: 'nope' })).status).toBe(400);
+  });
+
+  it('a spoken chat message is marked as voice for the assistant, which then answers in short spoken sentences', async () => {
+    let seen: { voice?: boolean } | undefined;
+    const respond = vi.fn(async (_t: string, c: { voice?: boolean }) => ((seen = c), 'Certainly, Sir.'));
+    const app = createApp({ isDbConnected: () => true, extraRouters: [webChatRouter({ token: TOKEN, respond: respond as never, store, ownerChatId: '1' })] });
+    await request(app).post('/api/chat').set({ Authorization: `Bearer ${TOKEN}` }).send({ query: 'hello', voice: true });
+    expect(seen?.voice).toBe(true);
+    await request(app).post('/api/chat').set({ Authorization: `Bearer ${TOKEN}` }).send({ query: 'hello again' });
+    expect(seen?.voice).toBeUndefined();
+
+    const { Agent } = await import('../src/core/orchestrator/assistant');
+    let system = '';
+    const ai = { chat: vi.fn(async (m: Array<{ content: string }>) => ((system = m[0]!.content), { content: 'Sir, ok.', toolCalls: [] })), complete: vi.fn() };
+    const agent = new Agent({ ai: ai as never, store: { claimInbound: async () => true, saveOutbound: async () => undefined, recent: async () => [{ direction: 'in', text: 'hi' }] }, registry: new ToolRegistry(), timezone: 'Asia/Kolkata' });
+    await agent.respond('hi', { channel: 'telegram', chatId: '1', voice: true });
+    expect(system).toMatch(/VOICE CONVERSATION/);
+    await agent.respond('hi', { channel: 'telegram', chatId: '1' });
+    expect(system).not.toMatch(/VOICE CONVERSATION/);
   });
 });

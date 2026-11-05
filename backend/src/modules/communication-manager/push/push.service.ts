@@ -5,6 +5,14 @@ import { NotificationModel, PushPrefModel, PushSubscriptionModel } from '../../.
 export type Category = 'reminder' | 'alert' | 'news' | 'system';
 export const CATEGORIES: Category[] = ['reminder', 'alert', 'news', 'system'];
 
+/** Extra information shown when a notification is opened in the app. */
+export interface NotificationDetails {
+  source?: string;
+  description?: string;
+  link?: string;
+  published?: string;
+}
+
 export interface PushPayload {
   title: string;
   body: string;
@@ -15,6 +23,8 @@ export interface PushPayload {
   tag?: string;
   /** Lets the Stop button on the notification stop a repeating reminder. */
   reminderId?: string;
+  /** Shown only inside the app (never put in the push message itself). */
+  details?: NotificationDetails;
 }
 
 export interface StoredSub {
@@ -30,6 +40,7 @@ export interface NotificationRecord {
   url: string;
   category: Category;
   reminderId?: string;
+  details?: NotificationDetails;
   read: boolean;
   createdAt: string;
 }
@@ -41,7 +52,7 @@ export interface PushRepo {
   removeSub(endpoint: string): Promise<void>;
   listSubs(): Promise<StoredSub[]>;
   touchSub(endpoint: string): Promise<void>;
-  addNotification(n: { title: string; body: string; url: string; category: Category; reminderId?: string }): Promise<string>;
+  addNotification(n: { title: string; body: string; url: string; category: Category; reminderId?: string; details?: NotificationDetails }): Promise<string>;
   listNotifications(limit: number): Promise<NotificationRecord[]>;
   /** Marks the given ids (or everything when ids is omitted) as read; returns how many changed. */
   markRead(ids?: string[]): Promise<number>;
@@ -58,6 +69,15 @@ export function makeWebPushSender(vapid: { subject: string; publicKey: string; p
   return async (sub, payload) => {
     await webpush.sendNotification({ endpoint: sub.endpoint, keys: sub.keys }, payload, { TTL: 6 * 3600, urgency: 'high' });
   };
+}
+
+/** Keeps only short text and web links, so nothing odd from a news feed is stored or shown. */
+export function cleanDetails(d?: NotificationDetails): NotificationDetails | undefined {
+  if (!d) return undefined;
+  const text = (v: unknown, n: number) => (typeof v === 'string' && v.trim() ? v.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').replace(/\s+([.,;:!?])/g, '$1').trim().slice(0, n) : undefined);
+  const link = typeof d.link === 'string' && /^https?:\/\/[^\s]{4,500}$/i.test(d.link.trim()) ? d.link.trim() : undefined;
+  const out: NotificationDetails = { source: text(d.source, 80), description: text(d.description, 500), link, published: text(d.published, 60) };
+  return Object.values(out).some(Boolean) ? out : undefined;
 }
 
 const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
@@ -103,7 +123,7 @@ export class PushService {
     const body = clip(p.body, 300);
     const url = p.url && p.url.startsWith('/') ? p.url : '/';
     try {
-      const id = await this.repo.addNotification({ title, body, url, category, reminderId: p.reminderId });
+      const id = await this.repo.addNotification({ title, body, url, category, reminderId: p.reminderId, details: cleanDetails(p.details) });
       if (!this.sender) return { id, delivered: 0, removed: 0 };
       const [prefs, subs] = await Promise.all([this.repo.getPrefs(), this.repo.listSubs()]);
       if (!prefs[category] || !subs.length) return { id, delivered: 0, removed: 0 };
@@ -151,7 +171,7 @@ export class MongoPushRepo implements PushRepo {
   async touchSub(endpoint: string): Promise<void> {
     await PushSubscriptionModel.updateOne({ endpoint }, { $set: { lastSuccessAt: new Date() } });
   }
-  async addNotification(n: { title: string; body: string; url: string; category: Category; reminderId?: string }): Promise<string> {
+  async addNotification(n: { title: string; body: string; url: string; category: Category; reminderId?: string; details?: NotificationDetails }): Promise<string> {
     const d = await NotificationModel.create(n);
     return String(d._id);
   }
@@ -164,6 +184,7 @@ export class MongoPushRepo implements PushRepo {
       url: d.url ?? '/',
       category: (d.category ?? 'system') as Category,
       reminderId: d.reminderId ?? undefined,
+      details: d.details && (d.details.link || d.details.source || d.details.description) ? { source: d.details.source ?? undefined, description: d.details.description ?? undefined, link: d.details.link ?? undefined, published: d.details.published ?? undefined } : undefined,
       read: !!d.readAt,
       createdAt: new Date(d.createdAt as Date).toISOString(),
     }));

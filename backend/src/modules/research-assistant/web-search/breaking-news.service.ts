@@ -11,12 +11,21 @@ export interface AlertFeed {
   fetch(): Promise<Article[]>;
 }
 
+export interface AlertMeta {
+  headline: string;
+  source?: string;
+  description?: string;
+  link?: string;
+  published?: string;
+}
+
 export interface BreakingDeps {
   feeds: AlertFeed[];
   ai: Completer;
   seen: SeenRepo;
   jobs: JobRunRepo;
-  notify: (channel: Channel, chatId: string, text: string) => Promise<void>;
+  /** `meta` carries the headline and the article's source, summary and link, for the in-app notification. */
+  notify: (channel: Channel, chatId: string, text: string, meta?: AlertMeta) => Promise<void>;
   recipients: Array<{ channel: Channel; chatId: string }>;
   timezone: string;
   /** How often to check, in minutes. */
@@ -121,7 +130,8 @@ export class BreakingNewsService {
     for (const p of picked) {
       const [k, a] = items[p.n - 1]!;
       const text = `🚨  TAMIL NADU ALERT\n\n${p.headline}\n\n— ${a.source}`;
-      for (const r of this.d.recipients) await this.d.notify(r.channel, r.chatId, text);
+      const meta: AlertMeta = { headline: p.headline, source: a.source, description: a.description, link: a.link, published: a.pubDate };
+      for (const r of this.d.recipients) await this.d.notify(r.channel, r.chatId, text, meta);
       await this.d.seen.mark(KIND, [k], true); // mark right after delivery so a later failure cannot cause a repeat
       alertedKeys.add(k);
     }

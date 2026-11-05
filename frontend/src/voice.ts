@@ -61,80 +61,95 @@ export interface Listener {
 }
 
 /**
- * Hands-free listening for voice mode: starts recording, notices when the person starts talking and when they stop
- * (a pause of about a second), then returns the speech. `onLevel` reports the live mic loudness (0..1) for the animation.
+ * A microphone kept open for a whole voice conversation (so there is no start-up delay between turns, and the app can also
+ * notice when you talk over a reply). `level()` is the live loudness (0..1); `listen()` records one spoken turn.
  */
-export async function listen(onLevel: (level: number) => void, o: { endSilenceMs?: number; waitMs?: number; maxMs?: number } = {}): Promise<Listener> {
-  const endSilence = o.endSilenceMs ?? 1100;
-  const waitMs = o.waitMs ?? 12_000;
-  const maxMs = o.maxMs ?? 45_000;
-  const stream = await openMic();
-  const mime = pickMime();
-  const rec = new MediaRecorder(stream, { ...(mime ? { mimeType: mime } : {}), audioBitsPerSecond: 128_000 });
-  const chunks: Blob[] = [];
-  rec.ondataavailable = (e) => {
-    if (e.data.size) chunks.push(e.data);
-  };
+export interface MicSession {
+  level(): number;
+  listen(onLevel: (level: number) => void, o?: { endSilenceMs?: number; waitMs?: number; maxMs?: number }): Listener;
+  close(): void;
+}
 
+export async function openMicSession(): Promise<MicSession> {
+  const stream = await openMic();
   const Ctx = window.AudioContext ?? (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
   const ctx = new Ctx();
   const analyser = ctx.createAnalyser();
   analyser.fftSize = 1024;
   ctx.createMediaStreamSource(stream).connect(analyser);
-  const buf = new Uint8Array(analyser.fftSize);
-
-  let resolve!: (b: Blob | null) => void;
-  const done = new Promise<Blob | null>((r) => (resolve = r));
-  let finished = false;
-  let spoke = false;
-  let lastVoice = 0;
-  const started = Date.now();
-  let noise = 0.012; // adapts to the room's background noise
-  let calibrate = 8;
-
-  const end = (keep: boolean) => {
-    if (finished) return;
-    finished = true;
-    clearInterval(timer);
-    onLevel(0);
-    void ctx.close().catch(() => undefined);
-    const release = () => stream.getTracks().forEach((t) => t.stop());
-    if (!keep) {
-      rec.onstop = null;
-      if (rec.state !== 'inactive') rec.stop();
-      release();
-      return resolve(null);
-    }
-    rec.onstop = () => {
-      release();
-      resolve(new Blob(chunks, { type: rec.mimeType || mime || 'audio/webm' }));
-    };
-    setTimeout(() => rec.state !== 'inactive' && rec.stop(), 250);
-  };
-
-  const timer = setInterval(() => {
+  void ctx.resume();
+  const buf = new Uint8Array(new ArrayBuffer(analyser.fftSize));
+  const level = () => {
     analyser.getByteTimeDomainData(buf);
     let sum = 0;
     for (const v of buf) sum += ((v - 128) / 128) ** 2;
-    const rms = Math.sqrt(sum / buf.length);
-    onLevel(Math.min(1, rms * 5));
-    const now = Date.now();
-    if (calibrate > 0) {
-      noise = Math.max(noise, Math.min(rms * 1.2, 0.05));
-      calibrate--;
-      return;
-    }
-    if (rms > Math.max(noise * 2.6, 0.03)) {
-      spoke = true;
-      lastVoice = now;
-    } else if (!spoke) noise = noise * 0.97 + rms * 0.03;
-    if (spoke && now - lastVoice > endSilence) end(true);
-    else if (!spoke && now - started > waitMs) end(false);
-    else if (now - started > maxMs) end(spoke);
-  }, 50);
+    return Math.sqrt(sum / buf.length);
+  };
 
-  rec.start(250);
-  return { done, finish: () => end(spoke || Date.now() - started > 600), cancel: () => end(false) };
+  const listen: MicSession['listen'] = (onLevel, o = {}) => {
+    // about a second of quiet after you finish is the signal to answer; a little less feels more alive
+    const endSilence = o.endSilenceMs ?? 900;
+    const waitMs = o.waitMs ?? 12_000;
+    const maxMs = o.maxMs ?? 45_000;
+    const mime = pickMime();
+    const rec = new MediaRecorder(stream, { ...(mime ? { mimeType: mime } : {}), audioBitsPerSecond: 128_000 });
+    const chunks: Blob[] = [];
+    rec.ondataavailable = (e) => {
+      if (e.data.size) chunks.push(e.data);
+    };
+    let resolve!: (b: Blob | null) => void;
+    const done = new Promise<Blob | null>((r) => (resolve = r));
+    let finished = false;
+    let spoke = false;
+    let lastVoice = 0;
+    const started = Date.now();
+    let noise = 0.012; // adapts to the room's background noise
+    let calibrate = 6;
+
+    const end = (keep: boolean) => {
+      if (finished) return;
+      finished = true;
+      clearInterval(timer);
+      onLevel(0);
+      if (!keep) {
+        rec.onstop = null;
+        if (rec.state !== 'inactive') rec.stop();
+        return resolve(null);
+      }
+      rec.onstop = () => resolve(new Blob(chunks, { type: rec.mimeType || mime || 'audio/webm' }));
+      setTimeout(() => rec.state !== 'inactive' && rec.stop(), 200);
+    };
+
+    const timer = setInterval(() => {
+      const rms = level();
+      onLevel(Math.min(1, rms * 5));
+      const now = Date.now();
+      if (calibrate > 0) {
+        noise = Math.max(noise, Math.min(rms * 1.2, 0.05));
+        calibrate--;
+        return;
+      }
+      if (rms > Math.max(noise * 2.6, 0.03)) {
+        spoke = true;
+        lastVoice = now;
+      } else if (!spoke) noise = noise * 0.97 + rms * 0.03;
+      if (spoke && now - lastVoice > endSilence) end(true);
+      else if (!spoke && now - started > waitMs) end(false);
+      else if (now - started > maxMs) end(spoke);
+    }, 50);
+
+    rec.start(250);
+    return { done, finish: () => end(spoke || Date.now() - started > 600), cancel: () => end(false) };
+  };
+
+  return {
+    level,
+    listen,
+    close: () => {
+      stream.getTracks().forEach((t) => t.stop());
+      void ctx.close().catch(() => undefined);
+    },
+  };
 }
 
 /** Plain, speakable text from a Markdown reply (email draft cards and pictures are not read aloud). */
@@ -239,6 +254,11 @@ export function stopSpeaking(): void {
   p?.();
 }
 
+/** How much of the clip that is playing has been heard (0..1), so the captions can follow the voice word by word. */
+export function playbackFraction(): number {
+  return audio && audio.duration > 0 && audio.currentTime > 0 ? Math.min(1, audio.currentTime / audio.duration) : 0;
+}
+
 // loudness of the voice for the animation (real for server voices, a gentle pulse for the phone's own voice)
 let analyser: AnalyserNode | null = null;
 let analyserBuf: Uint8Array<ArrayBuffer> | null = null;
@@ -280,6 +300,12 @@ function chunks(text: string, max: number): string[] {
   }
   if (cur.trim()) out.push(cur.trim());
   return out.flatMap((c) => (c.length > max + 30 ? (c.match(new RegExp(`.{1,${max}}(\\s|$)`, 'g')) ?? [c]).map((x) => x.trim()) : [c]));
+}
+
+/** Like chunks(), but the first piece is one short sentence so the first words are heard as soon as possible. */
+function chunksLive(text: string, max: number): string[] {
+  const first = /^[^.!?\n]{15,140}[.!?]+\s*/.exec(text);
+  return first ? [first[0].trim(), ...chunks(text.slice(first[0].length), max)] : chunks(text, max);
 }
 
 function pickDeviceVoice(lang: string): SpeechSynthesisVoice | undefined {
@@ -326,7 +352,7 @@ function play(blob: Blob, myRun: number): Promise<void> {
 }
 
 /** A human-sounding server voice, one chunk at a time, fetching the next while the current one plays. Falls back to the phone's voice on any problem. */
-async function speakServer(pieces: string[], voice: string, s: Settings, myRun: number, lang: string, onEnd: () => void): Promise<void> {
+async function speakServer(pieces: string[], voice: string, s: Settings, myRun: number, lang: string, onEnd: () => void, onProgress?: (before: string, chunk: string) => void): Promise<void> {
   let next: Promise<Blob> | undefined = fetchSpeech(s, pieces[0]!, voice);
   next.catch(() => undefined);
   for (let i = 0; i < pieces.length; i++) {
@@ -335,6 +361,7 @@ async function speakServer(pieces: string[], voice: string, s: Settings, myRun: 
       next = i + 1 < pieces.length ? fetchSpeech(s, pieces[i + 1]!, voice) : undefined;
       next?.catch(() => undefined);
       if (run !== myRun) return;
+      onProgress?.(pieces.slice(0, i).join(' '), pieces[i]!);
       await play(blob, myRun);
       if (run !== myRun) return;
     } catch (e) {
@@ -355,7 +382,7 @@ function speakServerFallback(pieces: string[], s: Settings, myRun: number, lang:
   void speakServer(pieces, lang === 'ta-IN' ? 'edge:ta-IN-PallaviNeural' : DEFAULT_VOICE, s, myRun, lang, onEnd);
 }
 
-export function speak(markdown: string, onEnd?: () => void, settings?: Settings): void {
+export function speak(markdown: string, onEnd?: () => void, settings?: Settings, onProgress?: (before: string, chunk: string) => void): void {
   if (!canSpeak()) return onEnd?.();
   stopSpeaking();
   const myRun = run;
@@ -374,12 +401,15 @@ export function speak(markdown: string, onEnd?: () => void, settings?: Settings)
   let voice = readVoiceName();
   if (tamil && !voice.startsWith('edge:ta')) voice = 'edge:ta-IN-PallaviNeural'; // Tamil replies get a Tamil voice
   const server = voice.startsWith('edge:') || voice.startsWith('groq:');
-  if (server && settings?.token) void speakServer(chunks(text, voice.startsWith('edge:') ? 420 : 170), voice, settings, myRun, lang, finish);
-  else speakOnDevice(chunks(text, 170), lang, finish);
+  if (server && settings?.token) void speakServer(voice.startsWith('groq:') ? chunks(text, 170) : chunksLive(text, 420), voice, settings, myRun, lang, finish, onProgress);
+  else {
+    onProgress?.(text, ''); // the phone's own voice gives no timing: show everything as spoken
+    speakOnDevice(chunks(text, 170), lang, finish);
+  }
 }
 
 /** Speaks a reply and resolves when it has finished (or was interrupted). Used by voice mode. */
-export const speakAsync = (markdown: string, settings: Settings): Promise<void> => new Promise((resolve) => speak(markdown, resolve, settings));
+export const speakAsync = (markdown: string, settings: Settings, onProgress?: (before: string, chunk: string) => void): Promise<void> => new Promise((resolve) => speak(markdown, resolve, settings, onProgress));
 
 /** Replies the app itself produces when something went wrong should be shown, not read aloud. */
 export const isFailureReply = (t: string) => /^(Apologies, Sir\.|Sir, my AI service is busy)/.test(t);

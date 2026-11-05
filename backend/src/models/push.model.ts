@@ -20,6 +20,8 @@ const notificationSchema = new Schema(
     url: { type: String, default: '/' },
     category: { type: String, enum: ['reminder', 'alert', 'news', 'system'], default: 'system' },
     reminderId: { type: String },
+    /** More about the item (for a news alert: where it came from, a short summary and the link). */
+    details: { source: String, description: String, link: String, published: String },
     readAt: { type: Date },
     createdAt: { type: Date, default: Date.now, expires: 30 * 24 * 3600 },
   },

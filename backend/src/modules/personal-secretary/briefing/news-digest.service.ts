@@ -42,6 +42,11 @@ export interface DigestDeps {
   makePdf?: (payload: DigestPayload) => Promise<Buffer>;
   /** Delivers the PDF on a channel that supports files; channels without it just get the text. */
   sendFile?: (channel: Channel, chatId: string, file: DigestFile) => Promise<void>;
+  /**
+   * Extra morning deliveries besides the Telegram message: for example a phone notification and an email with the PDF attached.
+   * Each one is attempted once per day (and retried a few times if it fails) without ever re-sending the others.
+   */
+  extras?: Array<{ name: string; deliver: (digest: DigestPayload, pdf: () => Promise<DigestFile | undefined>) => Promise<void> }>;
   now?: () => Date;
 }
 
@@ -248,6 +253,7 @@ export class NewsDigestService {
       if (!claim) continue; // already sent, being sent elsewhere, or waiting to retry
       try {
         const digest = payload ?? (await this.buildDigest(now)); // last resort if preparation never succeeded
+        payload = digest;
         for (const part of splitDigest(digest.text)) await this.d.notify(rcpt.channel, rcpt.chatId, part);
         await this.d.repo.markSent(key, this.now);
         this.sent.add(key);
@@ -262,7 +268,43 @@ export class NewsDigestService {
         logger.error({ key, attempts: claim.attempts, max: MAX_JOB_ATTEMPTS, err: { message: msg } }, 'News digest failed');
       }
     }
+    await this.runExtras(payload, now, dateKey, sendAt, tz);
     return out;
+  }
+
+  /** The phone notification and the email: each claimed on its own, so one failing never repeats or blocks the others. */
+  private async runExtras(payload: DigestPayload | undefined, now: Date, dateKey: string, sendAt: Date, tz: string): Promise<void> {
+    for (const x of this.d.extras ?? []) {
+      const key = `news-digest:${dateKey}:extra:${x.name}`;
+      if (this.sent.has(key)) continue;
+      await this.d.repo.ensure({ key, kind: 'news-digest-extra', channel: 'all', chatId: x.name, timezone: tz, scheduledFor: sendAt }, now);
+      const claim = await this.d.repo.claim(key, now);
+      if (!claim) continue;
+      try {
+        const digest = payload ?? (await this.buildDigest(now));
+        payload = digest;
+        if (digest.sections.some((s) => s.stories.length)) await x.deliver(digest, () => this.pdfFile(digest, dateKey));
+        await this.d.repo.markSent(key, this.now);
+        this.sent.add(key);
+        logger.info({ key }, 'Morning briefing extra delivered');
+      } catch (err) {
+        const msg = (err as Error).message;
+        await this.d.repo.markFailed(key, msg, new Date(this.now.getTime() + 5 * 60_000 * claim.attempts));
+        logger.warn({ key, attempts: claim.attempts, err: { message: msg } }, 'Morning briefing extra failed, will retry');
+      }
+    }
+  }
+
+  /** Today's newspaper as a file, shared by every delivery (built once). Undefined if it cannot be made. */
+  private async pdfFile(digest: DigestPayload, dateKey: string): Promise<DigestFile | undefined> {
+    if (!this.d.makePdf || !digest.sections.some((s) => s.stories.length)) return undefined;
+    try {
+      if (this.pdf?.key !== dateKey) this.pdf = { key: dateKey, data: await this.d.makePdf(digest) };
+      return { name: `MJ-Times-${dateKey}.pdf`, data: this.pdf.data, caption: `MJ TIMES · ${digest.date}` };
+    } catch (err) {
+      logger.warn({ err: { message: (err as Error).message } }, 'MJ Times PDF could not be built');
+      return undefined;
+    }
   }
 
   private async sendPdf(rcpt: DigestRecipient, digest: DigestPayload, dateKey: string): Promise<void> {
