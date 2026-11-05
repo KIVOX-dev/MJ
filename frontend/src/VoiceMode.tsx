@@ -1,17 +1,18 @@
 import { useEffect, useRef, useState } from 'react';
 import { Ear, Mic, MicOff, X } from 'lucide-react';
+import { VoiceOrb } from './VoiceOrb';
 import { transcribeAudio, type Settings } from './api';
 import { DraftCard } from './cards';
 import { renderMarkdown, splitDrafts, type DraftData } from './markdown';
-import { openMicSession, playbackFraction, readSttLang, speakAsync, speakableText, stopSpeaking, unlockSpeech, type Listener, type MicSession } from './voice';
+import { openMicSession, outputLevel, playbackFraction, readSttLang, speakAsync, speakableText, stopSpeaking, unlockSpeech, type Listener, type MicSession } from './voice';
 
 type Phase = 'listening' | 'thinking' | 'speaking' | 'paused';
 
 const STATUS: Record<Phase, string> = {
-  listening: 'Listening...',
-  thinking: 'Thinking...',
-  speaking: 'Speaking... tap to interrupt',
-  paused: 'Tap the circle to talk',
+  listening: 'Listening',
+  thinking: 'Thinking',
+  speaking: 'Tap to interrupt',
+  paused: 'Tap to talk',
 };
 
 const BARGE_KEY = 'mj.barge';
@@ -44,7 +45,8 @@ export function VoiceMode(p: { settings: Settings; ask: (text: string) => Promis
   const phaseRef = useRef<Phase>('listening');
   const level = useRef(0);
   const progress = useRef({ base: 0, len: 0 });
-  const orb = useRef<HTMLDivElement>(null);
+  const vis = useRef<{ phase: Phase; level: number }>({ phase: 'listening', level: 0 });
+  const readVis = useRef(() => vis.current).current;
 
   const go = (ph: Phase) => {
     phaseRef.current = ph;
@@ -117,9 +119,9 @@ export function VoiceMode(p: { settings: Settings; ask: (text: string) => Promis
     let cur = 0;
     const tick = () => {
       const ph = phaseRef.current;
-      const target = ph === 'listening' ? level.current : ph === 'speaking' ? 0.2 + 0.25 * Math.abs(Math.sin(Date.now() / 150)) : ph === 'thinking' ? 0.18 + 0.12 * Math.sin(Date.now() / 260) : 0.05;
-      cur += (target - cur) * 0.25;
-      orb.current?.style.setProperty('--lvl', String(1 + cur * 0.4));
+      const target = ph === 'listening' ? level.current : ph === 'speaking' ? Math.max(0.12, Math.min(1, outputLevel() * 1.3)) : ph === 'thinking' ? 0.22 + 0.1 * Math.sin(Date.now() / 260) : 0.03;
+      cur += (target - cur) * 0.3;
+      vis.current = { phase: ph, level: cur };
       if (ph === 'speaking') setSpokenChars((prev) => { const n = Math.round(progress.current.base + progress.current.len * playbackFraction()); return n > prev ? n : prev; });
       raf = requestAnimationFrame(tick);
     };
@@ -182,22 +184,23 @@ export function VoiceMode(p: { settings: Settings; ask: (text: string) => Promis
   const rest = reply.slice(done.length);
 
   return (
-    <div className="voice" role="dialog" aria-label="Voice mode">
+    <div className={`voice ph-${phase}`} role="dialog" aria-label="Voice mode">
       <div className="voice-top">
-        <span>Voice mode</span>
-        <button className="icon-btn" aria-label="Close voice mode" onClick={close}>
+        <span className="vm-brand">
+          <i className="vm-dot" /> MJ
+        </span>
+        <button className="icon-btn vm-x" aria-label="Close voice mode" onClick={close}>
           <X size={22} />
         </button>
       </div>
 
-      <button className={`orb-wrap ${phase}`} onClick={tapOrb} aria-label={STATUS[phase]}>
-        <div className="orb" ref={orb}>
-          <i />
-        </div>
+      <button className={`orb-stage ph-${phase}`} onClick={tapOrb} aria-label={STATUS[phase]}>
+        <VoiceOrb read={readVis} />
       </button>
 
       <p className="voice-status" role="status">
         {STATUS[phase]}
+        {phase === 'thinking' && <span className="vm-dots"><b /><b /><b /></span>}
       </p>
 
       <div className="voice-captions">
@@ -217,16 +220,16 @@ export function VoiceMode(p: { settings: Settings; ask: (text: string) => Promis
 
       <div className="voice-bar">
         <button className={`vbtn ${barge ? 'on' : ''}`} aria-label={barge ? 'Talk over me: on' : 'Talk over me: off'} aria-pressed={barge} onClick={toggleBarge} title="Talk over me (best with headphones)">
-          <Ear size={24} />
+          <Ear size={22} />
         </button>
-        <button className="vbtn" aria-label={phase === 'paused' ? 'Start listening' : 'Pause'} onClick={() => (phase === 'paused' ? void cycle() : pause())}>
-          {phase === 'paused' ? <Mic size={26} /> : <MicOff size={26} />}
+        <button className="vbtn big" aria-label={phase === 'paused' ? 'Start listening' : 'Pause'} onClick={() => (phase === 'paused' ? void cycle() : pause())}>
+          {phase === 'paused' ? <Mic size={28} /> : <MicOff size={28} />}
         </button>
         <button className="vbtn end" aria-label="End voice mode" onClick={close}>
-          <X size={26} />
+          <X size={22} />
         </button>
       </div>
-      <p className="voice-hint">{barge ? 'Talk over me is on: just start speaking to interrupt. Headphones work best.' : 'Tap the circle to interrupt, or turn on the ear to talk over me.'}</p>
+      <p className="voice-hint">{barge ? 'Talk over me is on: just start speaking to interrupt' : 'Tap the orb to interrupt, or turn on the ear to talk over me'}</p>
     </div>
   );
 }
