@@ -23,6 +23,10 @@ const schema = z.object({
   VAPID_PUBLIC_KEY: z.string().min(40).max(120).optional(),
   VAPID_PRIVATE_KEY: z.string().min(20).max(120).optional(),
   VAPID_SUBJECT: z.string().regex(/^(mailto:.+@.+|https:\/\/.+)$/, 'must be mailto:you@example.com or https://...').optional(),
+  STT_LANGUAGE: z.string().regex(/^[a-z]{2}$/, 'use a two-letter code such as en or ta').optional(),
+  GEMINI_API_KEY: z.string().min(10).optional(),
+  HF_TOKEN: z.string().min(10).optional(),
+  POLLINATIONS_API_KEY: z.string().min(5).optional(),
   WEB_API_TOKEN: z.string().min(16, 'WEB_API_TOKEN must be at least 16 characters').optional(),
   BREVO_API_KEY: z.string().optional(),
   BREVO_SENDER_EMAIL: z.string().email().optional(),
@@ -45,7 +49,7 @@ const schema = z.object({
 });
 
 /** Optional add-ons: a bad value here disables the add-on instead of stopping the server. */
-const OPTIONAL_ADDONS = new Set(['VAPID_PUBLIC_KEY', 'VAPID_PRIVATE_KEY', 'VAPID_SUBJECT', 'WEB_API_TOKEN', 'BREVO_API_KEY', 'BREVO_SENDER_EMAIL', 'BREVO_SENDER_NAME', 'OWNER_EMAIL', 'CRAWLIT_URL', 'CRAWLIT_TOKEN']);
+const OPTIONAL_ADDONS = new Set(['GEMINI_API_KEY', 'HF_TOKEN', 'POLLINATIONS_API_KEY', 'STT_LANGUAGE', 'VAPID_PUBLIC_KEY', 'VAPID_PRIVATE_KEY', 'VAPID_SUBJECT', 'WEB_API_TOKEN', 'BREVO_API_KEY', 'BREVO_SENDER_EMAIL', 'BREVO_SENDER_NAME', 'OWNER_EMAIL', 'CRAWLIT_URL', 'CRAWLIT_TOKEN']);
 
 const list = (s: string) => s.split(',').map((x) => x.trim()).filter(Boolean);
 
@@ -112,6 +116,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
     jobsSecret: e.JOBS_SECRET,
     crawlitUrl,
     crawlitToken: e.CRAWLIT_TOKEN,
+    /** Default language hint for voice transcription (en, ta...). Unset = automatic. */
+    sttLanguage: e.STT_LANGUAGE,
+    /** Picture generation engines, best first. Pollinations needs no key. */
+    images: { geminiKey: e.GEMINI_API_KEY, hfToken: e.HF_TOKEN, pollinationsKey: e.POLLINATIONS_API_KEY },
     webApiToken: e.WEB_API_TOKEN,
     // Web Push (free, no third-party service). Needs all three; the subject falls back to mailto:OWNER_EMAIL.
     push: {

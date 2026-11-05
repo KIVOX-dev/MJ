@@ -1,5 +1,5 @@
 import { logger } from '../../../utils/logger';
-import type { Responder } from '../../../core/orchestrator/assistant';
+import type { AgentContext, Responder } from '../../../core/orchestrator/assistant';
 import type { MessageStore } from '../../../core/memory/message.store';
 import { MAX_DOC_BYTES, extractPdfText, extractPlainText } from '../../../utils/pdf';
 import type { TelegramSender } from './telegram.client';
@@ -16,6 +16,8 @@ export interface TelegramHandlerDeps {
   sendNewspaper?: (chatId: number) => Promise<void>;
   /** Speech-to-text for voice notes. Without it, voice notes get a polite "not enabled" reply. */
   transcribe?: (audio: Buffer, mime: string) => Promise<string>;
+  /** Reads a picture MJ generated, so it can be sent to the chat. */
+  getImage?: (id: string) => Promise<{ data: Buffer; mime: string } | undefined>;
 }
 
 /** Handles taps on inline buttons. Only the owner may press them; everything else is ignored. */
@@ -117,6 +119,15 @@ export async function processTelegramUpdate(update: TgUpdate, deps: TelegramHand
   try {
     const text = (msg.text ?? '').trim();
     const fromId = String(msg.from.id);
+    // Pictures the assistant generates while answering are sent right after the text reply.
+    const generated: string[] = [];
+    const rctx: AgentContext = deps.getImage ? { channel: 'telegram', chatId: fromId, onImage: (pid) => void generated.push(pid) } : { channel: 'telegram', chatId: fromId };
+    const sendImages = async () => {
+      for (const pid of generated.splice(0)) {
+        const img = await deps.getImage?.(pid).catch(() => undefined);
+        if (img) await deps.sender.sendPhoto?.(msg.chat.id, img.data, img.mime).catch((e: Error) => logger.warn({ err: { message: e.message } }, 'Could not send the generated picture'));
+      }
+    };
 
     // Setup helper: lets the owner discover their numeric id. Reveals only the sender's own id.
     if (/^\/(myid|whoami)(@\w+)?$/i.test(text)) {
@@ -163,8 +174,9 @@ export async function processTelegramUpdate(update: TgUpdate, deps: TelegramHand
         await deps.sender.sendText(msg.chat.id, 'Sir, I can read JPEG and PNG photos only.');
         return;
       }
-      const reply = await deps.respond(caption, { channel: 'telegram', chatId: fromId }, [{ mime, data: image }]);
+      const reply = await deps.respond(caption, rctx, [{ mime, data: image }]);
       const sent = await deps.sender.sendText(msg.chat.id, reply);
+      await sendImages();
       await deps.store.saveOutbound(`out-${sent.messageId}`, fromId, reply);
       return;
     }
@@ -190,8 +202,9 @@ export async function processTelegramUpdate(update: TgUpdate, deps: TelegramHand
         return;
       }
       const body = extracted.truncated ? `${extracted.text}\n[... the rest of the document was cut off ...]` : extracted.text;
-      const reply = await deps.respond(caption, { channel: 'telegram', chatId: fromId }, undefined, [{ name: docInfo.name, text: body }]);
+      const reply = await deps.respond(caption, rctx, undefined, [{ name: docInfo.name, text: body }]);
       const sent = await deps.sender.sendText(msg.chat.id, reply);
+      await sendImages();
       await deps.store.saveOutbound(`out-${sent.messageId}`, fromId, reply);
       return;
     }
@@ -222,8 +235,9 @@ export async function processTelegramUpdate(update: TgUpdate, deps: TelegramHand
       await deps.sender.sendText(msg.chat.id, `🎤 ${said}`);
       // Store the words as a normal text message so they become part of the conversation history.
       await deps.store.claimInbound(`voice-${update.update_id}`, fromId, said, 'text');
-      const reply = await deps.respond(said, { channel: 'telegram', chatId: fromId });
+      const reply = await deps.respond(said, rctx);
       const sent = await deps.sender.sendText(msg.chat.id, reply);
+      await sendImages();
       await deps.store.saveOutbound(`out-${sent.messageId}`, fromId, reply);
       return;
     }
@@ -249,8 +263,9 @@ export async function processTelegramUpdate(update: TgUpdate, deps: TelegramHand
       return;
     }
 
-    const reply = await deps.respond(text, { channel: 'telegram', chatId: fromId });
+    const reply = await deps.respond(text, rctx);
     const sent = await deps.sender.sendText(msg.chat.id, reply);
+      await sendImages();
     await deps.store.saveOutbound(`out-${sent.messageId}`, fromId, reply);
   } catch (err) {
     logger.error({ err: { message: (err as Error).message }, id: update.update_id }, 'Failed processing Telegram update');

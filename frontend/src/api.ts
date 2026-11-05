@@ -3,11 +3,19 @@ export interface Settings {
   url: string;
   token: string;
 }
+export interface Attachment {
+  name: string;
+  mime: string;
+  /** The file as base64. */
+  data: string;
+}
 export interface Msg {
   id: string;
   role: 'user' | 'assistant' | 'error';
   text: string;
   at: number;
+  /** Files shown on a message the user sent (photo thumbnail or file name). */
+  files?: Array<{ name: string; mime: string; preview?: string }>;
 }
 export interface Session {
   id: string;
@@ -68,6 +76,10 @@ async function call<T>(s: Settings, path: string, init: RequestInit = {}): Promi
   if (res.status === 401) throw new Error('The access token was not accepted. Check it in Settings.');
   if (res.status === 429) throw new Error('Too many requests. Please wait a moment.');
   if (res.status === 503) throw new Error('That feature is not switched on at the server yet.');
+  if (res.status === 400) {
+    const j = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(j.error && j.error.length < 300 ? j.error : 'That request was not accepted.');
+  }
   if (!res.ok) throw new Error(`The server had a problem (${res.status}). Please try again.`);
   return (await res.json()) as T;
 }
@@ -76,8 +88,12 @@ const post = (body: unknown): RequestInit => ({ method: 'POST', body: JSON.strin
 const sid = (id: string) => (id === 'main' ? '' : `&session_id=${encodeURIComponent(id)}`);
 
 // ---- chat ----
-export async function sendChat(s: Settings, text: string, sessionId: string): Promise<string> {
-  const j = await call<{ reply?: string; answer?: string }>(s, '/api/chat', post({ query: text, ...(sessionId !== 'main' ? { session_id: sessionId } : {}) }));
+export async function sendChat(s: Settings, text: string, sessionId: string, attachments: Attachment[] = []): Promise<string> {
+  const j = await call<{ reply?: string; answer?: string }>(
+    s,
+    '/api/chat',
+    post({ query: text, ...(sessionId !== 'main' ? { session_id: sessionId } : {}), ...(attachments.length ? { attachments } : {}) }),
+  );
   const reply = j.reply ?? j.answer;
   if (typeof reply !== 'string') throw new Error('The server sent an unexpected reply.');
   return reply;
@@ -101,12 +117,12 @@ export const renameSession = (s: Settings, id: string, title: string) => call<{ 
 export const deleteSession = (s: Settings, id: string) => call<{ ok: boolean }>(s, `/api/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' });
 
 // ---- voice ----
-export async function transcribeAudio(s: Settings, audio: Blob): Promise<string> {
+export async function transcribeAudio(s: Settings, audio: Blob, language = 'auto'): Promise<string> {
   let res: Response;
   try {
     res = await fetch(`${s.url}/api/transcribe`, {
       method: 'POST',
-      headers: { 'Content-Type': audio.type || 'audio/webm', Authorization: `Bearer ${s.token}` },
+      headers: { 'Content-Type': audio.type || 'audio/webm', Authorization: `Bearer ${s.token}`, ...(language !== 'auto' ? { 'X-Language': language } : {}) },
       body: audio,
     });
   } catch {
@@ -128,3 +144,19 @@ export const setPrefs = (s: Settings, p: Partial<Prefs>) => call<Prefs>(s, '/api
 export const listNotifications = (s: Settings) => call<{ notifications: NotificationItem[]; unread: number }>(s, '/api/notifications?limit=40');
 export const markRead = (s: Settings, ids?: string[]) => call<{ updated: number }>(s, '/api/notifications/read', post(ids ? { ids } : {}));
 export const stopReminder = (s: Settings, id: string) => call<{ stopped: boolean }>(s, `/api/reminders/${encodeURIComponent(id)}/stop`, { method: 'POST' });
+
+/** One short sentence of natural speech from the server (WAV). Throws "tts_terms_required" until the Groq model terms are accepted. */
+export async function fetchSpeech(s: Settings, text: string, voice: string): Promise<Blob> {
+  let res: Response;
+  try {
+    res = await fetch(`${s.url}/api/tts`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${s.token}` }, body: JSON.stringify({ text, voice }) });
+  } catch {
+    throw new Error('speech_failed');
+  }
+  if (res.status === 503) {
+    const j = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(j.error === 'tts_terms_required' ? 'tts_terms_required' : 'speech_failed');
+  }
+  if (!res.ok) throw new Error('speech_failed');
+  return res.blob();
+}

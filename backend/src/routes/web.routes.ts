@@ -3,7 +3,9 @@ import { Router, json, raw, type Request, type Response } from 'express';
 import rateLimit from 'express-rate-limit';
 import { z } from 'zod';
 import { logger } from '../utils/logger';
-import type { Responder } from '../core/orchestrator/assistant';
+import type { DocumentInput, ImageInput, Responder } from '../core/orchestrator/assistant';
+import { extractPdfText, extractPlainText } from '../utils/pdf';
+import { TTS_MAX_CHARS, TTS_VOICES, TtsTermsRequired, type TtsVoice } from '../core/ai-engine/speech';
 import type { MessageStore } from '../core/memory/message.store';
 import type { SessionRepo } from '../core/memory/session.repo';
 import { CATEGORIES, type PushService } from '../modules/communication-manager/push/push.service';
@@ -17,7 +19,11 @@ export interface WebChatDeps {
   /** The owner's chat id on the shared channel (the Telegram owner id). */
   ownerChatId: string;
   /** Speech-to-text for voice messages; the /api/transcribe route is only offered when this is set. */
-  transcribe?: (audio: Buffer, mime: string) => Promise<string>;
+  transcribe?: (audio: Buffer, mime: string, language?: string) => Promise<string>;
+  /** Reads a generated picture by id (the id is random and unguessable, so the image link needs no token). */
+  getImage?: (id: string) => Promise<{ data: Buffer; mime: string } | undefined>;
+  /** Natural-sounding speech for replies; the /api/tts route is only offered when this is set. */
+  speak?: (text: string, voice: TtsVoice) => Promise<Buffer>;
   /** Separate web chats (like ChatGPT conversations). Reminders and memory stay global across all of them. */
   sessions?: SessionRepo;
   storeFor?: (sessionId: string) => MessageStore;
@@ -39,6 +45,52 @@ const subscriptionSchema = z.object({
   keys: z.object({ p256dh: z.string().min(10).max(200), auth: z.string().min(8).max(100) }),
 });
 
+const attachmentSchema = z.object({
+  name: z.string().trim().min(1).max(120),
+  mime: z.string().max(100).default(''),
+  /** The file as base64 (a photo is resized by the app before it is sent). */
+  data: z.string().min(1),
+});
+const MAX_ATTACHMENTS = 4;
+const MAX_PHOTO_BYTES = 3_500_000; // keeps the model request under its 4 MB image limit
+const isJpeg = (b: Buffer) => b.length > 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff;
+const isPng = (b: Buffer) => b.length > 8 && b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47;
+
+class BadAttachment extends Error {}
+
+/** Photos go to the vision model; PDFs and text files are read into text. Same rules as the Telegram bot. */
+async function readAttachments(list: Array<z.infer<typeof attachmentSchema>>): Promise<{ images: ImageInput[]; documents: DocumentInput[]; labels: string[] }> {
+  const images: ImageInput[] = [];
+  const documents: DocumentInput[] = [];
+  const labels: string[] = [];
+  for (const a of list) {
+    const buf = Buffer.from(a.data, 'base64');
+    if (!buf.length) throw new BadAttachment(`"${a.name}" is empty.`);
+    const isPdf = a.mime === 'application/pdf' || /\.pdf$/i.test(a.name);
+    const isText = /^text\/plain/i.test(a.mime) || /\.txt$/i.test(a.name);
+    if (/^image\//i.test(a.mime)) {
+      const mime = isJpeg(buf) ? 'image/jpeg' : isPng(buf) ? 'image/png' : undefined;
+      if (!mime) throw new BadAttachment(`"${a.name}": I can read JPEG and PNG photos only.`);
+      if (buf.length > MAX_PHOTO_BYTES) throw new BadAttachment(`"${a.name}" is too large. Please send a smaller photo.`);
+      images.push({ mime, data: buf });
+      labels.push(`photo ${a.name}`);
+    } else if (isPdf || isText) {
+      let doc;
+      try {
+        doc = isPdf ? await extractPdfText(buf) : extractPlainText(buf);
+      } catch (e) {
+        throw new BadAttachment(`"${a.name}": ${(e as Error).message}.`.replace('..', '.'));
+      }
+      if (!doc.text.trim()) throw new BadAttachment(`"${a.name}" has no text I can read. If it is a scan, please send photos of the pages instead.`);
+      documents.push({ name: a.name, text: doc.truncated ? `${doc.text}\n[... the rest of the document was cut off ...]` : doc.text });
+      labels.push(a.name);
+    } else {
+      throw new BadAttachment(`"${a.name}": I can read photos (JPEG/PNG), PDFs and text files.`);
+    }
+  }
+  return { images, documents, labels };
+}
+
 const fail = (res: Response, err: unknown, what: string) => {
   logger.error({ err: { message: (err as Error).message } }, `Web ${what} failed`);
   res.status(500).json({ error: 'internal_error' });
@@ -47,6 +99,26 @@ const fail = (res: Response, err: unknown, what: string) => {
 /** Mobile web chat API: the same assistant as the Telegram bot, behind a bearer token. */
 export function webChatRouter(deps: WebChatDeps): Router {
   const r = Router();
+
+  // Generated pictures are loaded by <img> tags, which cannot send the access token. The 128-bit random id is the key.
+  if (deps.getImage) {
+    const getImage = deps.getImage;
+    r.get('/api/images/:id', async (req, res) => {
+      const id = String(req.params.id);
+      if (!/^[a-f0-9]{32}$/.test(id)) return void res.status(404).json({ error: 'not_found' });
+      try {
+        const img = await getImage(id);
+        if (!img) return void res.status(404).json({ error: 'not_found' });
+        res.setHeader('Content-Type', img.mime);
+        res.setHeader('Cache-Control', 'private, max-age=2592000, immutable');
+        res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+        res.setHeader('X-Content-Type-Options', 'nosniff');
+        res.send(img.data);
+      } catch (err) {
+        fail(res, err, 'image');
+      }
+    });
+  }
 
   r.use('/api', (req, res, next) => {
     const m = /^Bearer (.+)$/.exec(req.header('authorization') ?? '');
@@ -78,21 +150,39 @@ export function webChatRouter(deps: WebChatDeps): Router {
     }
   });
 
-  r.post('/api/chat', json({ limit: '32kb' }), async (req, res) => {
+  r.post('/api/chat', json({ limit: '16mb' }), async (req, res) => {
     // "query" matches the older MJ-CHAT-BOT UI; "message" is accepted too.
-    const raw = (req.body ?? {}) as { query?: unknown; message?: unknown; session_id?: unknown };
-    const text = String(raw.query ?? raw.message ?? '').trim();
-    if (!text || text.length > 4000) {
+    const raw = (req.body ?? {}) as { query?: unknown; message?: unknown; session_id?: unknown; attachments?: unknown };
+    const typed = String(raw.query ?? raw.message ?? '').trim();
+    const parsedFiles = z.array(attachmentSchema).max(MAX_ATTACHMENTS).safeParse(raw.attachments ?? []);
+    if (!parsedFiles.success) return void res.status(400).json({ error: `Up to ${MAX_ATTACHMENTS} files, each with a name and content.` });
+    if (typed.length > 4000 || (!typed && !parsedFiles.data.length)) {
       res.status(400).json({ error: 'message must be 1-4000 characters' });
       return;
     }
+    let files: Awaited<ReturnType<typeof readAttachments>>;
+    try {
+      files = await readAttachments(parsedFiles.data);
+    } catch (err) {
+      if (err instanceof BadAttachment) return void res.status(400).json({ error: err.message });
+      return fail(res, err, 'attachments');
+    }
+    const text = typed || 'Please look at what I attached and tell me what it is.';
+    // What is kept in the chat history: the words plus the names of the attached files.
+    const stored = files.labels.length ? `${typed}${typed ? '\n' : ''}${files.labels.map((l) => `📎 ${l}`).join('\n')}` : typed;
     try {
       const chat = await pick(raw.session_id);
       if (!chat) return void res.status(404).json({ error: 'unknown_session' });
       const id = `web-${crypto.randomUUID()}`;
-      await chat.store.claimInbound(id, deps.ownerChatId, text, 'text');
+      await chat.store.claimInbound(id, deps.ownerChatId, stored || text, 'text');
       // Reminders, memory and tools always act for the owner, whichever chat the message came from.
-      const reply = await chat.respond(text, { channel: 'telegram', chatId: deps.ownerChatId });
+      const pictures: string[] = [];
+      const who = { channel: 'telegram' as const, chatId: deps.ownerChatId, ...(deps.getImage ? { onImage: (pid: string) => void pictures.push(pid) } : {}) };
+      const answer = files.labels.length
+        ? await chat.respond(text, who, files.images.length ? files.images : undefined, files.documents.length ? files.documents : undefined)
+        : await chat.respond(text, who);
+      // Pictures made during this turn go under the reply as Markdown images (the app shows them as cards).
+      const reply = answer + pictures.map((pid) => `\n\n![Generated image](/api/images/${pid})`).join('');
       await chat.store.saveOutbound(`out-${id}`, deps.ownerChatId, reply);
       if (chat.id && deps.sessions) {
         await deps.sessions.autoTitle(chat.id, text);
@@ -150,11 +240,32 @@ export function webChatRouter(deps: WebChatDeps): Router {
         return;
       }
       try {
-        const text = await transcribe(audio, req.header('content-type') ?? 'audio/webm');
+        const text = await transcribe(audio, req.header('content-type') ?? 'audio/webm', req.header('x-language') ?? undefined);
         res.json({ text });
       } catch (err) {
         logger.warn({ err: { message: (err as Error).message } }, 'Web transcription failed');
         res.status(502).json({ error: 'transcription_failed' });
+      }
+    });
+  }
+
+  // ---- natural voice ----
+  if (deps.speak) {
+    const speak = deps.speak;
+    const ttsLimit = rateLimit({ windowMs: 60_000, limit: 60, standardHeaders: true, legacyHeaders: false });
+    r.get('/api/tts/voices', (_req, res) => void res.json({ voices: TTS_VOICES }));
+    r.post('/api/tts', ttsLimit, json({ limit: '4kb' }), async (req, res) => {
+      const p = z.object({ text: z.string().trim().min(1).max(TTS_MAX_CHARS), voice: z.enum(TTS_VOICES).default('hannah') }).safeParse(req.body);
+      if (!p.success) return void res.status(400).json({ error: `text must be 1-${TTS_MAX_CHARS} characters and voice one of ${TTS_VOICES.join(', ')}` });
+      try {
+        const wav = await speak(p.data.text, p.data.voice);
+        res.setHeader('Content-Type', 'audio/wav');
+        res.setHeader('Cache-Control', 'no-store');
+        res.send(wav);
+      } catch (err) {
+        if (err instanceof TtsTermsRequired) return void res.status(503).json({ error: 'tts_terms_required', message: err.message });
+        logger.warn({ err: { message: (err as Error).message } }, 'Web speech failed');
+        res.status(502).json({ error: 'speech_failed' });
       }
     });
   }

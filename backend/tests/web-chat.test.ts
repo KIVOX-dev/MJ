@@ -60,7 +60,9 @@ describe('web voice transcription', () => {
     expect((await request(app).post('/api/transcribe').set('Content-Type', 'audio/webm').send(audio)).status).toBe(401);
     const ok = await request(app).post('/api/transcribe').set('Authorization', `Bearer ${TOKEN}`).set('Content-Type', 'audio/webm;codecs=opus').send(audio);
     expect(ok.body).toEqual({ text: 'remind me at six' });
-    expect(tr).toHaveBeenCalledWith(expect.any(Buffer), 'audio/webm;codecs=opus');
+    expect(tr).toHaveBeenCalledWith(expect.any(Buffer), 'audio/webm;codecs=opus', undefined);
+    await request(app).post('/api/transcribe').set('Authorization', `Bearer ${TOKEN}`).set('Content-Type', 'audio/webm').set('X-Language', 'ta').send(audio);
+    expect(tr).toHaveBeenLastCalledWith(expect.any(Buffer), 'audio/webm', 'ta');
   });
 
   it('rejects tiny bodies, reports provider failure, and is absent when not configured', async () => {

@@ -36,6 +36,8 @@ import { TelegramBotClient } from './modules/communication-manager/telegram/tele
 import { BrevoClient } from './modules/communication-manager/email/brevo.client';
 import { registerEmailTools } from './modules/communication-manager/email/email.tools';
 import { GroqTranscriber } from './core/ai-engine/transcribe';
+import { GroqSpeech } from './core/ai-engine/speech';
+import { ImageService, MongoImageStore, geminiProvider, huggingFaceProvider, pollinationsProvider, registerImageTools, type ImageProvider } from './modules/creative/image.service';
 import { webChatRouter } from './routes/web.routes';
 import { MongoPushRepo, PushService, makeWebPushSender } from './modules/communication-manager/push/push.service';
 import { MongoSessionRepo } from './core/memory/session.repo';
@@ -50,6 +52,7 @@ async function main() {
 
   const groq = GroqService.fromConfig(config.groq);
   const stt = new GroqTranscriber(config.groq.apiKeys);
+  const tts = new GroqSpeech(config.groq.apiKeys);
   const reminders = new ReminderService(new MongoReminderRepo(), config.timezone);
   const registry = new ToolRegistry();
   registerReminderTools(registry, reminders);
@@ -69,6 +72,15 @@ async function main() {
   } else if (em.brevoApiKey) {
     logger.warn('BREVO_API_KEY is set but BREVO_SENDER_EMAIL or OWNER_EMAIL is missing: email disabled');
   }
+  // Picture generation: the best engine you gave a key for first, then the free no-key fallback.
+  const imageProviders: ImageProvider[] = [
+    ...(config.images.geminiKey ? [geminiProvider(config.images.geminiKey)] : []),
+    ...(config.images.hfToken ? [huggingFaceProvider(config.images.hfToken)] : []),
+    pollinationsProvider(config.images.pollinationsKey),
+  ];
+  const imageStore = new MongoImageStore();
+  registerImageTools(registry, new ImageService(imageProviders, imageStore));
+  logger.info({ engines: imageProviders.map((p) => p.name) }, 'Picture generation enabled');
   const memory = new MemoryService(new MongoMemoryRepo());
   registerMemoryTools(registry, memory);
   // Tells the assistant what already runs by itself, so it answers "when will I get breaking news?" instead of asking for details.
@@ -138,7 +150,8 @@ Reply "stop reminders" to stop these.` : text);
         respond: makeAgent('telegram'),
         sender: client,
         stopReminder: (chatId, id) => reminders.cancel('telegram', chatId, id),
-        transcribe: (a, m) => stt.transcribe(a, m),
+        transcribe: (a, m) => stt.transcribe(a, m, config.sttLanguage),
+        getImage: (id) => imageStore.get(id),
         sendNewspaper: async (chatId) => {
           if (!digest) throw new Error('the daily newspaper is switched off');
           const file = await digest.newspaperNow();
@@ -171,7 +184,9 @@ Reply "stop reminders" to stop these.` : text);
         respond: makeAgent('telegram'),
         store: new MongoMessageStore('telegram'),
         ownerChatId: ownerId,
-        transcribe: (a, m) => stt.transcribe(a, m),
+        transcribe: (a, m, l) => stt.transcribe(a, m, l ?? config.sttLanguage),
+        speak: (t, v) => tts.synth(t, v),
+        getImage: (id) => imageStore.get(id),
         sessions: new MongoSessionRepo(),
         storeFor: (sid) => new MongoMessageStore('telegram', sid),
         respondFor: (sid) => makeAgent('telegram', sid),
@@ -300,6 +315,7 @@ Reply "stop reminders" to stop these.` : text);
       newsDigest: !!digest,
       newsAlerts: !!alerts,
       push: push.enabled,
+      images: imageProviders.map((p) => p.name).join('+'),
     }),
   });
   const server = app.listen(config.port, () => {

@@ -58,13 +58,13 @@ def save(im, name, size):
     print('wrote', name)
 
 
-art = square_art(img, 0.14)
+art = square_art(img, 0.07)  # tighter margin: the brain fills more of the icon
 save(art.convert('RGB'), 'apple-touch-icon.png', 180)
 save(rounded(art), 'icon-192.png', 192)
 save(rounded(art), 'icon-512.png', 512)
 save(rounded(art), 'logo.png', 160)
 save(art.resize((32, 32), Image.LANCZOS).convert('RGB'), 'favicon-32.png', 32)
-save(square_art(img, 0.30), 'icon-maskable-512.png', 512)  # opaque, art inside the safe zone
+save(square_art(img, 0.15), 'icon-maskable-512.png', 512)  # opaque; Android crops this to a circle, so keep the art just inside the safe zone
 
 # Status-bar badge: Android only uses the alpha channel, so make the artwork opaque white on transparent.
 flat = square_art(img, 0.08).resize((192, 192), Image.LANCZOS).convert('L')

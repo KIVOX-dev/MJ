@@ -160,3 +160,24 @@ h1, h2, h3, h4, h5, p { margin: 0; }
 
 @media (min-width: 700px) { .app { border-left: 1px solid var(--line); border-right: 1px solid var(--line); } }
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+
+/* ---- attachments ---- */
+.attach { width: 40px; height: 40px; flex: none; border: 0; border-radius: 50%; background: transparent; color: var(--muted); display: grid; place-items: center; margin-left: -10px; }
+.attach:active { background: var(--surface2); }
+.attach:disabled { opacity: .35; }
+.pill-input { padding-left: 14px; }
+.pending { display: flex; gap: 8px; padding: 6px 14px 0; overflow-x: auto; }
+.pending-chip { position: relative; flex: none; height: 58px; min-width: 58px; max-width: 190px; border-radius: 14px; background: var(--surface); display: flex; align-items: center; gap: 8px; padding: 0 12px 0 10px; font-size: 13px; font-weight: 600; overflow: hidden; }
+.pending-chip img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.pending-chip span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pending-chip button { position: absolute; top: 3px; right: 3px; width: 20px; height: 20px; border: 0; border-radius: 50%; background: rgba(0,0,0,.65); color: #fff; display: grid; place-items: center; padding: 0; }
+.sent-files { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
+.sent-files img { width: 120px; height: 120px; border-radius: 12px; object-fit: cover; }
+.sent-doc { display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border-radius: 10px; background: var(--surface2); font-size: 13px; font-weight: 600; max-width: 100%; }
+
+/* ---- generated pictures ---- */
+.md img.gen-img { display: block; width: 100%; max-width: 440px; height: auto; margin: 10px 0 4px; border-radius: 18px; background: var(--surface); box-shadow: 0 6px 22px rgba(0,0,0,.14); cursor: zoom-in; min-height: 140px; }
+.lightbox { position: fixed; inset: 0; z-index: 60; background: rgba(0,0,0,.92); display: flex; align-items: center; justify-content: center; animation: fade .15s; }
+.lightbox > img { max-width: 100%; max-height: 82dvh; object-fit: contain; border-radius: 8px; }
+.lb-bar { position: absolute; top: calc(env(safe-area-inset-top) + 8px); left: 0; right: 0; display: flex; justify-content: flex-end; gap: 8px; padding: 0 12px; }
+.lb-btn { width: 46px; height: 46px; border-radius: 50%; border: 0; background: rgba(255,255,255,.16); color: #fff; display: grid; place-items: center; text-decoration: none; }

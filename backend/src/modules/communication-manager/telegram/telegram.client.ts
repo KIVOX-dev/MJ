@@ -7,6 +7,8 @@ export interface TelegramSender {
   clearKeyboard?(chatId: number | string, messageId: number): Promise<void>;
   /** Downloads a file the user sent (photo etc.) by its file_id. */
   downloadFile?(fileId: string, maxBytes?: number): Promise<Buffer>;
+  /** Sends a picture (e.g. one MJ generated). */
+  sendPhoto?(chatId: number | string, data: Buffer, mime: string, caption?: string): Promise<{ messageId: number }>;
 }
 
 interface TgResponse<T> {
@@ -79,6 +81,16 @@ export class TelegramBotClient implements TelegramSender {
     if (caption) form.set('caption', caption.slice(0, 1000));
     form.set('document', new Blob([new Uint8Array(data)], { type: 'application/pdf' }), filename);
     const r = await this.call<{ message_id: number }>('sendDocument', form);
+    return { messageId: r.message_id };
+  }
+
+  async sendPhoto(chatId: number | string, data: Buffer, mime: string, caption?: string): Promise<{ messageId: number }> {
+    const form = new FormData();
+    form.set('chat_id', String(chatId));
+    if (caption) form.set('caption', caption.slice(0, 1000));
+    const ext = mime === 'image/png' ? 'png' : mime === 'image/webp' ? 'webp' : 'jpg';
+    form.set('photo', new Blob([new Uint8Array(data)], { type: mime }), `mj-image.${ext}`);
+    const r = await this.call<{ message_id: number }>('sendPhoto', form);
     return { messageId: r.message_id };
   }
 

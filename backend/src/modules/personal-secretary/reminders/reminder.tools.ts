@@ -11,12 +11,8 @@ export function registerReminderTools(registry: ToolRegistry, svc: ReminderServi
   registry.register({
     name: 'create_reminder',
     description:
-      'Create a reminder that MJ will send to the user in this chat. Give the time in ONE of two ways: ' +
-      '(a) in_minutes for relative times like "in 2 minutes" or "in 1 hour" (convert to minutes); or ' +
-      '(b) day + time for clock times: day is "today", "tomorrow" or a date YYYY-MM-DD, and time is 24-hour HH:mm ' +
-      'in the user\'s local time (Asia/Kolkata). Do NOT work out calendar dates yourself: pass the word "today" or "tomorrow". ' +
-      'EVERY reminder repeats every 10 minutes (with a Stop button on Telegram) until the user stops it, so it cannot be missed. ' +
-      'Set repeat_every_minutes only if the user names another interval; set once=true ONLY if they explicitly say it should ring just once.',
+      'Create a reminder sent to the user in this chat. Time: either in_minutes (relative, e.g. "in 2 minutes" = 2), or day ("today", "tomorrow" or YYYY-MM-DD) + time (24-hour HH:mm, Asia/Kolkata). ' +
+      'Pass the words "today"/"tomorrow", never compute dates. Every reminder repeats every 10 minutes with a Stop button until stopped; set repeat_every_minutes only for another interval, and once=true only if the user explicitly wants a single reminder.',
     schema: z.object({
       text: z.string().min(1).max(500).describe('What to remind the user about, phrased as a short message'),
       in_minutes: z.number().int().min(1).max(525600).optional().describe('Minutes from now'),

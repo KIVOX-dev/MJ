@@ -1,6 +1,6 @@
 import { Router } from 'express';
 
-export function healthRouter(deps: { isDbConnected: () => boolean; /** On/off state of optional features (names only, never secrets). */ features?: () => Record<string, boolean | string[]> }): Router {
+export function healthRouter(deps: { isDbConnected: () => boolean; /** On/off state of optional features (names only, never secrets). */ features?: () => Record<string, boolean | string | string[]> }): Router {
   const r = Router();
   // Liveness: process is up.
   r.get('/health', (_req, res) => {

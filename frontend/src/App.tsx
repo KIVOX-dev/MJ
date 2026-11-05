@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowUp, Bell, Check, Copy, Menu, MessageSquare, Mic, Pencil, RotateCcw, Settings as Cog, SquarePen, Square, Trash2, Volume2, VolumeX, X } from 'lucide-react';
+import { ArrowUp, Bell, Check, Copy, Download, FileText, Menu, MessageSquare, Mic, Paperclip, Pencil, RotateCcw, Settings as Cog, SquarePen, Square, Trash2, Volume2, VolumeX, X } from 'lucide-react';
 import {
   createSession,
   deleteSession,
@@ -15,12 +15,13 @@ import {
   type Session,
   type Settings,
 } from './api';
-import { renderMarkdown } from './markdown';
+import { renderMarkdown, setImageBase } from './markdown';
+import { MAX_FILES, prepareFile, type Pending } from './attach';
 import { NotificationsPanel, SettingsPanel } from './panels';
 import { refreshSubscription, registerServiceWorker, writeSwConfig } from './push';
-import { canRecord, canSpeak, readSpeakPref, speak, startRecording, stopSpeaking, unlockSpeech, writeSpeakPref, type Recording } from './voice';
+import { canRecord, canSpeak, isFailureReply, readSpeakPref, readSttLang, speak, startRecording, stopSpeaking, unlockSpeech, writeSpeakPref, type Recording } from './voice';
 
-const SUGGESTIONS = ["What's the latest news?", 'Remind me in 10 minutes to stretch', 'What do you remember about me?', 'Email me a summary of today'];
+const SUGGESTIONS = ["What's the latest news?", 'Remind me in 10 minutes to stretch', 'Draw a futuristic city at sunset', 'Email me a summary of today'];
 const MAX_SECONDS = 120;
 const MAIN: Session = { id: 'main', title: 'Telegram chat', updatedAt: '' };
 let counter = 0;
@@ -64,11 +65,15 @@ export function App() {
   const [recording, setRecording] = useState(false);
   const [seconds, setSeconds] = useState(0);
   const [transcribing, setTranscribing] = useState(false);
+  const [files, setFiles] = useState<Pending[]>([]);
+  const [lightbox, setLightbox] = useState<string | null>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
   const recRef = useRef<Recording | null>(null);
   const endRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const loadedRef = useRef<Set<string>>(new Set());
 
+  setImageBase(settings.url); // generated pictures are loaded from the backend
   const messages = chats[activeId] ?? [];
   const active = activeId === 'main' ? MAIN : (sessions.find((s) => s.id === activeId) ?? { id: activeId, title: 'New chat', updatedAt: '' });
   const put = useCallback((id: string, fn: (m: Msg[]) => Msg[]) => setChats((c) => ({ ...c, [id]: fn(c[id] ?? []) })), []);
@@ -192,23 +197,28 @@ export function App() {
   const send = useCallback(
     async (raw: string) => {
       const q = raw.trim();
-      if (!q || busy) return;
+      if ((!q && !files.length) || busy) return;
       if (!settings.token) return setPanel('settings');
       const sid = activeId;
+      const sending = files;
       unlockSpeech(); // runs inside the tap so spoken replies are allowed later
       stopSpeaking();
       setSpeakingId(null);
       setText('');
       setBusy(true);
-      put(sid, (m) => [...m.filter((x) => x.role !== 'error'), { id: uid(), role: 'user', text: q, at: Date.now() }]);
+      setFiles([]);
+      put(sid, (m) => [
+        ...m.filter((x) => x.role !== 'error'),
+        { id: uid(), role: 'user', text: q, at: Date.now(), files: sending.length ? sending.map((f) => ({ name: f.name, mime: f.mime, preview: f.preview })) : undefined },
+      ]);
       try {
-        const reply = await sendChat(settings, q, sid);
+        const reply = await sendChat(settings, q, sid, sending.map(({ name, mime, data }) => ({ name, mime, data })));
         setStatus('online');
         const id = uid();
         put(sid, (m) => [...m, { id, role: 'assistant', text: reply, at: Date.now() }]);
-        if (canSpeak() && speakAll) {
+        if (canSpeak() && speakAll && !isFailureReply(reply)) {
           setSpeakingId(id);
-          speak(reply, () => setSpeakingId((cur) => (cur === id ? null : cur)));
+          speak(reply, () => setSpeakingId((cur) => (cur === id ? null : cur)), settings);
         }
         if (sid !== 'main') void listSessions(settings).then(setSessions);
       } catch (e) {
@@ -218,7 +228,7 @@ export function App() {
         setBusy(false);
       }
     },
-    [activeId, busy, fail, put, settings, speakAll],
+    [activeId, busy, fail, files, put, settings, speakAll],
   );
 
   // ---- voice input ----
@@ -249,7 +259,7 @@ export function App() {
     try {
       const audio = await rec.stop();
       if (audio.size < 800) throw new Error('That was too short. Tap the mic and speak a little longer.');
-      const said = await transcribeAudio(settings, audio);
+      const said = await transcribeAudio(settings, audio, readSttLang());
       if (!said) throw new Error('I could not hear anything. Please try again.');
       await send(said);
     } catch (e) {
@@ -292,7 +302,21 @@ export function App() {
       return;
     }
     setSpeakingId(m.id);
-    speak(m.text, () => setSpeakingId((cur) => (cur === m.id ? null : cur)));
+    speak(m.text, () => setSpeakingId((cur) => (cur === m.id ? null : cur)), settings);
+  };
+  const addFiles = async (list: FileList | null) => {
+    if (!list?.length) return;
+    const room = MAX_FILES - files.length;
+    if (list.length > room) fail(activeId, `You can attach up to ${MAX_FILES} files at a time.`);
+    for (const f of Array.from(list).slice(0, Math.max(room, 0))) {
+      try {
+        const p = await prepareFile(f);
+        setFiles((x) => (x.length < MAX_FILES ? [...x, p] : x));
+      } catch (e) {
+        fail(activeId, (e as Error).message);
+      }
+    }
+    if (fileRef.current) fileRef.current.value = '';
   };
   const copy = async (m: Msg) => {
     try {
@@ -334,7 +358,14 @@ export function App() {
         </button>
       </header>
 
-      <main className="stream" aria-live="polite">
+      <main
+        className="stream"
+        aria-live="polite"
+        onClick={(e) => {
+          const t = e.target as HTMLElement;
+          if (t.tagName === 'IMG' && t.classList.contains('gen-img')) setLightbox((t as HTMLImageElement).src);
+        }}
+      >
         {empty && (
           <section className="hello">
             <img src="/logo.png" alt="" width={64} height={64} />
@@ -371,7 +402,22 @@ export function App() {
             </div>
           ) : m.role === 'user' ? (
             <div key={m.id} className="row me">
-              <div className="bubble">{m.text}</div>
+              <div className="bubble">
+                {m.files && (
+                  <div className="sent-files">
+                    {m.files.map((f, i) =>
+                      f.preview ? (
+                        <img key={i} src={f.preview} alt={f.name} />
+                      ) : (
+                        <span key={i} className="sent-doc">
+                          <FileText size={15} /> {f.name}
+                        </span>
+                      ),
+                    )}
+                  </div>
+                )}
+                {m.text}
+              </div>
             </div>
           ) : (
             <div key={m.id} className="row ai">
@@ -419,6 +465,20 @@ export function App() {
         </button>
       )}
 
+      {files.length > 0 && (
+        <div className="pending">
+          {files.map((f) => (
+            <div key={f.id} className="pending-chip">
+              {f.preview ? <img src={f.preview} alt={f.name} /> : <FileText size={20} />}
+              {!f.preview && <span>{f.name}</span>}
+              <button type="button" aria-label={`Remove ${f.name}`} onClick={() => setFiles((x) => x.filter((y) => y.id !== f.id))}>
+                <X size={13} />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
       <form
         className="composer"
         onSubmit={(e) => {
@@ -441,6 +501,10 @@ export function App() {
           </div>
         ) : (
           <div className="pill-input">
+            <input ref={fileRef} type="file" hidden multiple accept="image/*,application/pdf,text/plain,.pdf,.txt" onChange={(e) => void addFiles(e.target.files)} />
+            <button type="button" className="attach" aria-label="Attach photos or files" disabled={busy || transcribing || files.length >= MAX_FILES} onClick={() => fileRef.current?.click()}>
+              <Paperclip size={20} />
+            </button>
             <textarea
               ref={inputRef}
               rows={1}
@@ -452,8 +516,8 @@ export function App() {
               aria-label="Message"
               disabled={transcribing}
             />
-            {text.trim() || !canRecord() ? (
-              <button className="send" type="submit" disabled={!text.trim() || busy} aria-label="Send">
+            {text.trim() || files.length > 0 || !canRecord() ? (
+              <button className="send" type="submit" disabled={(!text.trim() && !files.length) || busy} aria-label="Send">
                 <ArrowUp size={20} />
               </button>
             ) : (
@@ -464,6 +528,20 @@ export function App() {
           </div>
         )}
       </form>
+
+      {lightbox && (
+        <div className="lightbox" onClick={() => setLightbox(null)}>
+          <div className="lb-bar" onClick={(e) => e.stopPropagation()}>
+            <a href={lightbox} download="mj-image.jpg" className="lb-btn" aria-label="Download">
+              <Download size={20} />
+            </a>
+            <button className="lb-btn" aria-label="Close" onClick={() => setLightbox(null)}>
+              <X size={22} />
+            </button>
+          </div>
+          <img src={lightbox} alt="Generated" onClick={(e) => e.stopPropagation()} />
+        </div>
+      )}
 
       {drawer && (
         <div className="drawer-scrim" onClick={() => setDrawer(false)}>

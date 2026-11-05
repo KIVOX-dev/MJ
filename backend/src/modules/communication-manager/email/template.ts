@@ -45,6 +45,8 @@ export interface EmailTemplateOptions {
   /** Link-style button under the message. */
   button?: { label: string; url: string };
   date?: string;
+  /** "external": for someone other than Sir. No "Good day, Sir" and a neutral footer. */
+  audience?: 'owner' | 'external';
 }
 
 export function renderEmailHtml(subject: string, body: string, o: EmailTemplateOptions = {}): string {
@@ -53,6 +55,7 @@ export function renderEmailHtml(subject: string, body: string, o: EmailTemplateO
     o.button && /^https?:\/\//.test(o.button.url)
       ? `<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:8px 0 18px 0;"><tr><td align="center" bgcolor="#7c3aed" style="border-radius:12px;background:linear-gradient(135deg,#a21cff,#2a6bff);"><a href="${esc(o.button.url)}" style="display:inline-block;padding:13px 26px;font-family:${SANS};font-size:15px;font-weight:700;color:#ffffff;text-decoration:none;border-radius:12px;">${esc(o.button.label)}</a></td></tr></table>`
       : '';
+  const external = o.audience === 'external';
   const date = o.date ? `<div style="font-family:${SANS};font-size:12px;color:#94a3b8;margin-top:2px;">${esc(o.date)}</div>` : '';
 
   return `<!DOCTYPE html>
@@ -78,7 +81,7 @@ export function renderEmailHtml(subject: string, body: string, o: EmailTemplateO
               <tr>
                 <td width="46" height="46" align="center" valign="middle" bgcolor="#12053a" style="width:46px;height:46px;border-radius:13px;background-color:#12053a;font-family:${SANS};font-size:19px;font-weight:800;color:#ffffff;letter-spacing:0.5px;">MJ</td>
                 <td style="padding-left:14px;">
-                  <div style="font-family:${SANS};font-size:12px;font-weight:700;letter-spacing:1.6px;color:rgba(255,255,255,0.85);text-transform:uppercase;">Your assistant</div>
+                  <div style="font-family:${SANS};font-size:12px;font-weight:700;letter-spacing:1.6px;color:rgba(255,255,255,0.85);text-transform:uppercase;">${external ? 'Personal assistant' : 'Your assistant'}</div>
                   <div style="font-family:${SERIF};font-size:23px;line-height:1.25;font-weight:700;color:#ffffff;">${esc(o.heading ?? subject)}</div>
                 </td>
               </tr>
@@ -87,7 +90,7 @@ export function renderEmailHtml(subject: string, body: string, o: EmailTemplateO
         </tr>
         <tr>
           <td style="padding:28px 28px 8px 28px;">
-            <p style="margin:0 0 16px 0;font-family:${SERIF};font-size:21px;font-weight:700;color:#0f172a;">Good day, Sir.</p>
+            ${external ? '' : `<p style="margin:0 0 16px 0;font-family:${SERIF};font-size:21px;font-weight:700;color:#0f172a;">Good day, Sir.</p>`}
             ${blocks(body)}
             ${button}
           </td>
@@ -97,9 +100,9 @@ export function renderEmailHtml(subject: string, body: string, o: EmailTemplateO
         </tr>
         <tr>
           <td style="padding:16px 28px 26px 28px;">
-            <div style="font-family:${SANS};font-size:13px;line-height:1.5;color:#64748b;">Sent by <strong style="color:#6d28d9;">MJ</strong>, your personal intelligence assistant.</div>
+            <div style="font-family:${SANS};font-size:13px;line-height:1.5;color:#64748b;">${external ? 'Sent by <strong style="color:#6d28d9;">MJ</strong>, a personal assistant, on behalf of its owner.' : 'Sent by <strong style="color:#6d28d9;">MJ</strong>, your personal intelligence assistant.'}</div>
             ${date}
-            <div style="font-family:${SERIF};font-style:italic;font-size:13px;line-height:1.5;color:#94a3b8;margin-top:6px;">You are receiving this because you asked MJ to email you. Reply to chat with MJ on Telegram.</div>
+            <div style="font-family:${SERIF};font-style:italic;font-size:13px;line-height:1.5;color:#94a3b8;margin-top:6px;">${external ? 'You can reply directly to this email.' : 'You are receiving this because you asked MJ to email you. Reply to chat with MJ on Telegram.'}</div>
           </td>
         </tr>
       </table>

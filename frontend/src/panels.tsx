@@ -13,7 +13,7 @@ import {
   type Settings,
 } from './api';
 import { disablePush, enablePush, isIos, pushState, type PushState } from './push';
-import { canSpeak, listVoices, readVoiceName, speak, writeVoiceName } from './voice';
+import { NATURAL_VOICES, canSpeak, listVoices, readSttLang, readVoiceName, speak, speechNote, writeSttLang, writeVoiceName, type SttLang } from './voice';
 
 const ICONS: Record<Category, typeof BellRing> = { reminder: AlarmClock, alert: Siren, news: Newspaper, system: Sparkles };
 const LABELS: Record<Category, string> = { reminder: 'Reminders', alert: 'Breaking news alerts', news: 'Morning news briefing', system: 'MJ messages' };
@@ -184,6 +184,8 @@ export function SettingsPanel(p: {
   const [busy, setBusy] = useState(false);
   const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
   const [voice, setVoice] = useState(readVoiceName());
+  const [lang, setLang] = useState<SttLang>(readSttLang());
+  const [voiceNote, setVoiceNote] = useState('');
 
   const refresh = useCallback(async () => {
     setState(await pushState());
@@ -277,7 +279,7 @@ export function SettingsPanel(p: {
                   <span>Speak every reply aloud</span>
                   <Switch on={p.speakAll} onChange={p.onSpeakAll} label="Speak every reply aloud" />
                 </div>
-                {voices.length > 0 && (
+                {(voices.length > 0 || NATURAL_VOICES.length > 0) && (
                   <label className="field">
                     Voice
                     <select
@@ -287,22 +289,53 @@ export function SettingsPanel(p: {
                         writeVoiceName(e.target.value);
                       }}
                     >
-                      <option value="">Automatic (best available)</option>
-                      {voices.map((v) => (
-                        <option key={`${v.name}-${v.lang}`} value={v.name}>
-                          {v.name} ({v.lang})
-                        </option>
-                      ))}
+                      <optgroup label="Natural voices (English)">
+                        {NATURAL_VOICES.map((v) => (
+                          <option key={v.id} value={v.id}>
+                            {v.label}
+                          </option>
+                        ))}
+                      </optgroup>
+                      <optgroup label="Voices on this phone">
+                        <option value="">Automatic (best on this phone)</option>
+                        {voices.map((v) => (
+                          <option key={`${v.name}-${v.lang}`} value={v.name}>
+                            {v.name} ({v.lang})
+                          </option>
+                        ))}
+                      </optgroup>
                     </select>
                   </label>
                 )}
-                <button className="soft-btn" onClick={() => speak('Good day, Sir. This is how I will sound.')}>
+                <button
+                  className="soft-btn"
+                  onClick={() => {
+                    setVoiceNote('');
+                    speak('Good day, Sir. This is how I will sound when I read your replies.', undefined, p.settings);
+                    setTimeout(() => setVoiceNote(speechNote()), 3500);
+                  }}
+                >
                   <Volume2 size={16} /> Test voice
                 </button>
+                {voiceNote && <p className="note small">{voiceNote}</p>}
               </>
             ) : (
               <p className="note">This browser cannot speak replies aloud.</p>
             )}
+            <label className="field">
+              Language I speak to MJ
+              <select
+                value={lang}
+                onChange={(e) => {
+                  setLang(e.target.value as SttLang);
+                  writeSttLang(e.target.value as SttLang);
+                }}
+              >
+                <option value="auto">Automatic</option>
+                <option value="en">English (best for English with an Indian accent)</option>
+                <option value="ta">தமிழ் (Tamil)</option>
+              </select>
+            </label>
           </div>
         </>
       )}

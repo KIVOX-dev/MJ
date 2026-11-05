@@ -8,6 +8,10 @@ export interface ToolContext {
   chatId: string;
   timezone: string;
   now: () => Date;
+  /** Unique per assistant turn (one user message). Lets a tool tell "same message" from "a later message". */
+  turnId?: string;
+  /** Hands a generated picture (by id) to the chat layer, which shows it to the user. Absent on chats that cannot show pictures. */
+  onImage?: (imageId: string) => void;
 }
 
 export interface ToolDef<S extends z.ZodObject = z.ZodObject> {
