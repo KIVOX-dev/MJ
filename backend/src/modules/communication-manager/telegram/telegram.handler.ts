@@ -14,6 +14,8 @@ export interface TelegramHandlerDeps {
   stopReminder?: (chatId: string, reminderId: string) => Promise<boolean>;
   /** Builds and sends today's MJ TIMES PDF to the chat. Throws if it cannot. */
   sendNewspaper?: (chatId: number) => Promise<void>;
+  /** Speech-to-text for voice notes. Without it, voice notes get a polite "not enabled" reply. */
+  transcribe?: (audio: Buffer, mime: string) => Promise<string>;
 }
 
 /** Handles taps on inline buttons. Only the owner may press them; everything else is ignored. */
@@ -60,6 +62,10 @@ export interface TgUpdate {
     photo?: Array<{ file_id: string; width: number; height: number; file_size?: number }>;
     /** A file sent as a document (images sent "as file" arrive here). */
     document?: { file_id: string; file_name?: string; mime_type?: string; file_size?: number };
+    /** A recorded voice note (OGG/Opus). */
+    voice?: { file_id: string; duration?: number; mime_type?: string; file_size?: number };
+    /** An audio file sent as music/audio. */
+    audio?: { file_id: string; duration?: number; mime_type?: string; file_size?: number };
   };
 }
 
@@ -71,6 +77,16 @@ function pickDocument(msg: NonNullable<TgUpdate['message']>): { fileId: string; 
   const mime = d.mime_type ?? '';
   const kind = mime === 'application/pdf' || /\.pdf$/i.test(name) ? 'pdf' : /^text\/plain/i.test(mime) || /\.txt$/i.test(name) ? 'text' : undefined;
   return kind ? { fileId: d.file_id, name, kind, tooBig: (d.file_size ?? 0) > MAX_DOC_BYTES } : undefined;
+}
+
+const MAX_VOICE_BYTES = 20_000_000;
+const MAX_VOICE_SECONDS = 300;
+
+/** Voice note or audio file the user sent. */
+function pickVoice(msg: NonNullable<TgUpdate['message']>): { fileId: string; mime: string; seconds: number; tooBig: boolean } | undefined {
+  const v = msg.voice ?? msg.audio;
+  if (!v) return undefined;
+  return { fileId: v.file_id, mime: v.mime_type ?? 'audio/ogg', seconds: v.duration ?? 0, tooBig: (v.file_size ?? 0) > MAX_VOICE_BYTES };
 }
 
 const MAX_PHOTO_BYTES = 3_000_000; // keeps the base64 request well under the model's 4 MB limit
@@ -110,14 +126,15 @@ export async function processTelegramUpdate(update: TgUpdate, deps: TelegramHand
 
     const photoId = pickPhoto(msg);
     const docInfo = photoId ? undefined : pickDocument(msg);
+    const voiceInfo = photoId || docInfo ? undefined : pickVoice(msg);
     const caption = (msg.caption ?? '').trim();
 
     // Duplicate prevention: Telegram retries; update_id makes this idempotent.
     const fresh = await deps.store.claimInbound(
       String(update.update_id),
       fromId,
-      text || caption || (photoId ? '[photo]' : docInfo ? `[document: ${docInfo.name}]` : ''),
-      photoId ? 'photo' : docInfo ? 'document' : text ? 'text' : 'other',
+      text || caption || (photoId ? '[photo]' : docInfo ? `[document: ${docInfo.name}]` : voiceInfo ? '[voice]' : ''),
+      photoId ? 'photo' : docInfo ? 'document' : voiceInfo ? 'voice' : text ? 'text' : 'other',
     );
     if (!fresh) {
       logger.info({ id: update.update_id }, 'Duplicate Telegram update skipped');
@@ -173,8 +190,40 @@ export async function processTelegramUpdate(update: TgUpdate, deps: TelegramHand
       return;
     }
 
+    // Voice notes: download, transcribe, show what was heard, then answer exactly as if it had been typed.
+    if (voiceInfo) {
+      if (!deps.transcribe || !deps.sender.downloadFile) {
+        await deps.sender.sendText(msg.chat.id, 'Sir, voice notes are not switched on yet. Please type your message for now.');
+        return;
+      }
+      if (voiceInfo.tooBig || voiceInfo.seconds > MAX_VOICE_SECONDS) {
+        await deps.sender.sendText(msg.chat.id, 'Sir, that voice note is too long. Please keep it under 5 minutes.');
+        return;
+      }
+      let said: string;
+      try {
+        const audio = await deps.sender.downloadFile(voiceInfo.fileId, MAX_VOICE_BYTES);
+        said = (await deps.transcribe(audio, voiceInfo.mime)).trim();
+      } catch (err) {
+        logger.warn({ err: { message: (err as Error).message } }, 'Telegram voice note could not be transcribed');
+        await deps.sender.sendText(msg.chat.id, 'Apologies, Sir. I could not understand that voice note. Please try again or type it.');
+        return;
+      }
+      if (!said) {
+        await deps.sender.sendText(msg.chat.id, 'Sir, I could not hear any words in that voice note.');
+        return;
+      }
+      await deps.sender.sendText(msg.chat.id, `🎤 ${said}`);
+      // Store the words as a normal text message so they become part of the conversation history.
+      await deps.store.claimInbound(`voice-${update.update_id}`, fromId, said, 'text');
+      const reply = await deps.respond(said, { channel: 'telegram', chatId: fromId });
+      const sent = await deps.sender.sendText(msg.chat.id, reply);
+      await deps.store.saveOutbound(`out-${sent.messageId}`, fromId, reply);
+      return;
+    }
+
     if (!text) {
-      await deps.sender.sendText(msg.chat.id, 'Sir, I can read text, photos, PDFs and text files for now. Voice notes are coming soon.');
+      await deps.sender.sendText(msg.chat.id, 'Sir, I can read text, photos, PDFs and text files, and I can listen to voice notes.');
       return;
     }
     if (text === '/start') {

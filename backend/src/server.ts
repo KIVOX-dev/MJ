@@ -47,6 +47,7 @@ async function main() {
   await Promise.all([MessageModel.syncIndexes(), ReminderModel.syncIndexes(), JobRunModel.syncIndexes(), SeenArticleModel.syncIndexes(), MemoryModel.syncIndexes()]);
 
   const groq = GroqService.fromConfig(config.groq);
+  const stt = new GroqTranscriber(config.groq.apiKeys);
   const reminders = new ReminderService(new MongoReminderRepo(), config.timezone);
   const registry = new ToolRegistry();
   registerReminderTools(registry, reminders);
@@ -135,6 +136,7 @@ Reply "stop reminders" to stop these.` : text);
         respond: makeAgent('telegram'),
         sender: client,
         stopReminder: (chatId, id) => reminders.cancel('telegram', chatId, id),
+        transcribe: (a, m) => stt.transcribe(a, m),
         sendNewspaper: async (chatId) => {
           if (!digest) throw new Error('the daily newspaper is switched off');
           const file = await digest.newspaperNow();
@@ -149,7 +151,6 @@ Reply "stop reminders" to stop these.` : text);
   }
 
   // Mobile web app: same assistant as the Telegram bot (shared history, memory and reminders).
-  const stt = new GroqTranscriber(config.groq.apiKeys);
   if (config.webApiToken && tg.ownerId) {
     extraRouters.push(webChatRouter({ token: config.webApiToken, respond: makeAgent('telegram'), store: new MongoMessageStore('telegram'), ownerChatId: tg.ownerId, transcribe: (a, m) => stt.transcribe(a, m) }));
     logger.info('Web chat API enabled at /api/chat');

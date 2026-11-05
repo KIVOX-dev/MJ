@@ -98,3 +98,59 @@ describe('MongoMessageStore duplicate detection', () => {
     spy.mockRestore();
   });
 });
+
+describe('telegram voice notes', () => {
+  const voiceUpdate = (id: number) => ({
+    update_id: id,
+    message: { message_id: id, from: { id: 555 }, chat: { id: 555, type: 'private' }, voice: { file_id: 'v1', duration: 4, mime_type: 'audio/ogg', file_size: 20000 } },
+  });
+  function voiceSetup(transcribe?: (a: Buffer, m: string) => Promise<string>) {
+    const sender = { sendText: vi.fn().mockResolvedValue({ messageId: 1 }), downloadFile: vi.fn().mockResolvedValue(Buffer.alloc(500, 1)) };
+    const respond = vi.fn().mockResolvedValue('Certainly, Sir.');
+    const deps = { webhookSecret: SECRET, ownerId: OWNER, store: memoryStore(), respond, sender, transcribe };
+    return { deps, sender, respond };
+  }
+
+  it('transcribes a voice note, shows the words, and answers as if typed', async () => {
+    const tr = vi.fn().mockResolvedValue('remind me at six');
+    const { deps, sender, respond } = voiceSetup(tr);
+    await processTelegramUpdate(voiceUpdate(10), deps);
+    expect(tr).toHaveBeenCalledWith(expect.any(Buffer), 'audio/ogg');
+    expect(sender.sendText.mock.calls.map((c) => c[1])).toEqual(['🎤 remind me at six', 'Certainly, Sir.']);
+    expect(respond).toHaveBeenCalledWith('remind me at six', { channel: 'telegram', chatId: '555' });
+  });
+
+  it('ignores voice notes from anyone but the owner', async () => {
+    const tr = vi.fn();
+    const { deps, sender } = voiceSetup(tr);
+    const u = voiceUpdate(11);
+    await processTelegramUpdate({ ...u, message: { ...u.message, from: { id: 999 } } }, deps);
+    expect(tr).not.toHaveBeenCalled();
+    expect(sender.sendText).not.toHaveBeenCalled();
+  });
+
+  it('handles failures, silence, and a missing transcriber politely', async () => {
+    const failing = voiceSetup(vi.fn().mockRejectedValue(new Error('x')));
+    await processTelegramUpdate(voiceUpdate(12), failing.deps);
+    expect(failing.sender.sendText.mock.calls[0]![1]).toMatch(/could not understand/);
+    expect(failing.respond).not.toHaveBeenCalled();
+
+    const silent = voiceSetup(vi.fn().mockResolvedValue('  '));
+    await processTelegramUpdate(voiceUpdate(13), silent.deps);
+    expect(silent.sender.sendText.mock.calls[0]![1]).toMatch(/could not hear/);
+
+    const off = voiceSetup(undefined);
+    await processTelegramUpdate(voiceUpdate(14), off.deps);
+    expect(off.sender.sendText.mock.calls[0]![1]).toMatch(/not switched on/);
+  });
+
+  it('rejects very long voice notes without downloading them', async () => {
+    const tr = vi.fn();
+    const { deps, sender } = voiceSetup(tr);
+    const u = voiceUpdate(15);
+    u.message.voice.duration = 900;
+    await processTelegramUpdate(u, deps);
+    expect(sender.downloadFile).not.toHaveBeenCalled();
+    expect(sender.sendText.mock.calls[0]![1]).toMatch(/too long/);
+  });
+});
