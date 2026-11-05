@@ -5,7 +5,8 @@ import { z } from 'zod';
 import { logger } from '../utils/logger';
 import type { DocumentInput, ImageInput, Responder } from '../core/orchestrator/assistant';
 import { extractPdfText, extractPlainText } from '../utils/pdf';
-import { TTS_MAX_CHARS, TTS_VOICES, TtsTermsRequired, type TtsVoice } from '../core/ai-engine/speech';
+import type { EmailController } from '../modules/communication-manager/email/email.tools';
+import { DEFAULT_VOICE, TTS_MAX_CHARS, TtsTermsRequired, VOICE_IDS, type Speech } from '../core/ai-engine/speech';
 import type { MessageStore } from '../core/memory/message.store';
 import type { SessionRepo } from '../core/memory/session.repo';
 import { CATEGORIES, type PushService } from '../modules/communication-manager/push/push.service';
@@ -20,10 +21,14 @@ export interface WebChatDeps {
   ownerChatId: string;
   /** Speech-to-text for voice messages; the /api/transcribe route is only offered when this is set. */
   transcribe?: (audio: Buffer, mime: string, language?: string) => Promise<string>;
+  /** Sends or discards email drafts when Sir taps the buttons on a draft card. */
+  emailDrafts?: EmailController;
   /** Reads a generated picture by id (the id is random and unguessable, so the image link needs no token). */
   getImage?: (id: string) => Promise<{ data: Buffer; mime: string } | undefined>;
   /** Natural-sounding speech for replies; the /api/tts route is only offered when this is set. */
-  speak?: (text: string, voice: TtsVoice) => Promise<Buffer>;
+  speak?: (text: string, voiceId: string) => Promise<Speech>;
+  /** The voices offered in Settings and the one used by default (depends on which engines are configured). */
+  voices?: { default: string; voices: Array<{ id: string; label: string }> };
   /** Separate web chats (like ChatGPT conversations). Reminders and memory stay global across all of them. */
   sessions?: SessionRepo;
   storeFor?: (sessionId: string) => MessageStore;
@@ -177,12 +182,20 @@ export function webChatRouter(deps: WebChatDeps): Router {
       await chat.store.claimInbound(id, deps.ownerChatId, stored || text, 'text');
       // Reminders, memory and tools always act for the owner, whichever chat the message came from.
       const pictures: string[] = [];
-      const who = { channel: 'telegram' as const, chatId: deps.ownerChatId, ...(deps.getImage ? { onImage: (pid: string) => void pictures.push(pid) } : {}) };
+      const draftCards: Array<{ id: string; to: string; subject: string; body: string }> = [];
+      const who = {
+        channel: 'telegram' as const,
+        chatId: deps.ownerChatId,
+        ...(deps.getImage ? { onImage: (pid: string) => void pictures.push(pid) } : {}),
+        ...(deps.emailDrafts ? { onDraft: (d: { id: string; to: string; subject: string; body: string }) => void draftCards.push(d) } : {}),
+      };
       const answer = files.labels.length
         ? await chat.respond(text, who, files.images.length ? files.images : undefined, files.documents.length ? files.documents : undefined)
         : await chat.respond(text, who);
       // Pictures made during this turn go under the reply as Markdown images (the app shows them as cards).
-      const reply = answer + pictures.map((pid) => `\n\n![Generated image](/api/images/${pid})`).join('');
+      // A draft becomes a card in the app (a fenced block it renders with Send / Discard buttons). Backticks are escaped so the text cannot break the fence.
+      const cards = draftCards.map((d) => `\n\n\`\`\`mj-email\n${JSON.stringify(d).replace(/`/g, '\\u0060')}\n\`\`\``).join('');
+      const reply = answer + pictures.map((pid) => `\n\n![Generated image](/api/images/${pid})`).join('') + cards;
       await chat.store.saveOutbound(`out-${id}`, deps.ownerChatId, reply);
       if (chat.id && deps.sessions) {
         await deps.sessions.autoTitle(chat.id, text);
@@ -253,20 +266,43 @@ export function webChatRouter(deps: WebChatDeps): Router {
   if (deps.speak) {
     const speak = deps.speak;
     const ttsLimit = rateLimit({ windowMs: 60_000, limit: 60, standardHeaders: true, legacyHeaders: false });
-    r.get('/api/tts/voices', (_req, res) => void res.json({ voices: TTS_VOICES }));
+    r.get('/api/tts/voices', (_req, res) => void res.json(deps.voices ?? { default: DEFAULT_VOICE, voices: [] }));
     r.post('/api/tts', ttsLimit, json({ limit: '4kb' }), async (req, res) => {
-      const p = z.object({ text: z.string().trim().min(1).max(TTS_MAX_CHARS), voice: z.enum(TTS_VOICES).default('hannah') }).safeParse(req.body);
-      if (!p.success) return void res.status(400).json({ error: `text must be 1-${TTS_MAX_CHARS} characters and voice one of ${TTS_VOICES.join(', ')}` });
+      const p = z.object({ text: z.string().trim().min(1).max(TTS_MAX_CHARS), voice: z.enum(VOICE_IDS).default(deps.voices?.default ?? DEFAULT_VOICE) }).safeParse(req.body);
+      if (!p.success) return void res.status(400).json({ error: `text must be 1-${TTS_MAX_CHARS} characters and voice one of the listed voices` });
       try {
-        const wav = await speak(p.data.text, p.data.voice);
-        res.setHeader('Content-Type', 'audio/wav');
+        const audio = await speak(p.data.text, p.data.voice);
+        res.setHeader('Content-Type', audio.mime);
         res.setHeader('Cache-Control', 'no-store');
-        res.send(wav);
+        res.send(audio.data);
       } catch (err) {
         if (err instanceof TtsTermsRequired) return void res.status(503).json({ error: 'tts_terms_required', message: err.message });
         logger.warn({ err: { message: (err as Error).message } }, 'Web speech failed');
         res.status(502).json({ error: 'speech_failed' });
       }
+    });
+  }
+
+  // ---- email draft buttons ----
+  if (deps.emailDrafts) {
+    const mail = deps.emailDrafts;
+    const sendLimit = rateLimit({ windowMs: 60_000, limit: 10, standardHeaders: true, legacyHeaders: false });
+    r.post('/api/email/send', sendLimit, json({ limit: '64kb' }), async (req, res) => {
+      const p = z
+        .object({ draft_id: z.string().min(4).max(20), subject: z.string().trim().min(1).max(200).optional(), body: z.string().trim().min(1).max(10000).optional() })
+        .safeParse(req.body);
+      if (!p.success) return void res.status(400).json({ error: 'A draft id is required.' });
+      try {
+        res.json(await mail.send(p.data.draft_id, { subject: p.data.subject, body: p.data.body }));
+      } catch (err) {
+        // expected problems (expired draft, daily limit, mail service refusing) are shown to Sir as they are
+        logger.warn({ err: { message: (err as Error).message } }, 'Email send from the app failed');
+        res.status(400).json({ error: (err as Error).message.slice(0, 200) });
+      }
+    });
+    r.post('/api/email/discard', json({ limit: '4kb' }), (req, res) => {
+      const id = String((req.body as { draft_id?: unknown })?.draft_id ?? '');
+      res.json({ discarded: mail.discard(id) });
     });
   }
 

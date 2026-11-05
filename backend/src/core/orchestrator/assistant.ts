@@ -34,6 +34,8 @@ export interface AgentContext {
   chatId: string;
   /** Called when a tool creates a picture, so the chat layer can deliver it. */
   onImage?: (imageId: string) => void;
+  /** Called when the assistant drafts an email, so the chat layer can show it with Send / Discard buttons. */
+  onDraft?: (draft: { id: string; to: string; subject: string; body: string }) => void;
 }
 
 /** What chat handlers call: text in, final reply text out. Never throws. */
@@ -191,7 +193,7 @@ export class Agent {
         : '';
       const extra = [this.deps.extraInstructions, memoryBlock, photoNote, docNote].filter(Boolean).join('\n');
       const messages: ChatMessage[] = [{ role: 'system', content: systemPrompt(now(), timezone, specs.length > 0, extra, specs.map((t) => t.function.name)) }, ...turns];
-      const toolCtx = { channel: ctx.channel, chatId: ctx.chatId, timezone, now, turnId: crypto.randomUUID(), onImage: ctx.onImage };
+      const toolCtx = { channel: ctx.channel, chatId: ctx.chatId, timezone, now, turnId: crypto.randomUUID(), onImage: ctx.onImage, onDraft: ctx.onDraft };
 
       for (let step = 0; step < MAX_STEPS; step++) {
         const res = await ai.chat(messages, { tools: specs, ...(hasPhoto && this.deps.visionModels?.length ? { models: this.deps.visionModels } : {}) });

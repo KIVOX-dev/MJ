@@ -24,7 +24,7 @@ ENV NODE_ENV=production \
     PORT=9000
 WORKDIR /app
 # tini = proper PID 1 so SIGTERM reaches Node (graceful shutdown)
-RUN apk add --no-cache tini
+RUN apk add --no-cache tini fontconfig ttf-dejavu
 COPY --from=deps  --chown=node:node /app/node_modules ./node_modules
 COPY --from=build --chown=node:node /app/dist ./dist
 # fonts for the MJ Times PDF (Anek Tamil, SIL OFL 1.1)

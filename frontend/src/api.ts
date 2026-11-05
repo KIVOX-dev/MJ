@@ -160,3 +160,8 @@ export async function fetchSpeech(s: Settings, text: string, voice: string): Pro
   if (!res.ok) throw new Error('speech_failed');
   return res.blob();
 }
+
+/** Sends an email draft through the server (Brevo) after Sir taps Send. Subject and text may have been edited on the card. */
+export const sendDraft = (s: Settings, id: string, edits?: { subject?: string; body?: string }) =>
+  call<{ sent_to: string }>(s, '/api/email/send', post({ draft_id: id, ...edits }));
+export const discardDraft = (s: Settings, id: string) => call<{ discarded: boolean }>(s, '/api/email/discard', post({ draft_id: id }));

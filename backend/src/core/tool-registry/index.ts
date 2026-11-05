@@ -12,6 +12,8 @@ export interface ToolContext {
   turnId?: string;
   /** Hands a generated picture (by id) to the chat layer, which shows it to the user. Absent on chats that cannot show pictures. */
   onImage?: (imageId: string) => void;
+  /** Shows an email draft to the user with Send and Discard buttons. Absent on chats without buttons. */
+  onDraft?: (draft: { id: string; to: string; subject: string; body: string }) => void;
 }
 
 export interface ToolDef<S extends z.ZodObject = z.ZodObject> {

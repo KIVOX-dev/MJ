@@ -1,6 +1,6 @@
 export interface TelegramSender {
   /** `stopReminderId` adds an inline "Stop reminder" button for that reminder. */
-  sendText(chatId: number | string, text: string, opts?: { stopReminderId?: string }): Promise<{ messageId: number }>;
+  sendText(chatId: number | string, text: string, opts?: { stopReminderId?: string; buttons?: Array<{ text: string; data: string }> }): Promise<{ messageId: number }>;
   /** Acknowledges a button press (removes the spinner on the user's screen, optionally shows a toast). */
   answerCallback?(callbackQueryId: string, text?: string): Promise<void>;
   /** Removes the inline keyboard from a message once its button has been used. */
@@ -42,14 +42,16 @@ export class TelegramBotClient implements TelegramSender {
     return json.result;
   }
 
-  async sendText(chatId: number | string, text: string, opts: { stopReminderId?: string } = {}): Promise<{ messageId: number }> {
+  async sendText(chatId: number | string, text: string, opts: { stopReminderId?: string; buttons?: Array<{ text: string; data: string }> } = {}): Promise<{ messageId: number }> {
     // Telegram text limit is 4096 chars
     const r = await this.call<{ message_id: number }>('sendMessage', {
       chat_id: chatId,
       text: text.slice(0, 4000),
       ...(opts.stopReminderId
         ? { reply_markup: { inline_keyboard: [[{ text: '⏹  Stop reminder', callback_data: `stop:${opts.stopReminderId}` }]] } }
-        : {}),
+        : opts.buttons?.length
+          ? { reply_markup: { inline_keyboard: [opts.buttons.map((b) => ({ text: b.text, callback_data: b.data }))] } }
+          : {}),
     });
     return { messageId: r.message_id };
   }

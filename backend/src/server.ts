@@ -34,10 +34,11 @@ import { whatsappRouter } from './routes/whatsapp.routes';
 import { telegramRouter } from './routes/telegram.routes';
 import { TelegramBotClient } from './modules/communication-manager/telegram/telegram.client';
 import { BrevoClient } from './modules/communication-manager/email/brevo.client';
-import { registerEmailTools } from './modules/communication-manager/email/email.tools';
-import { GroqTranscriber } from './core/ai-engine/transcribe';
-import { GroqSpeech } from './core/ai-engine/speech';
-import { ImageService, MongoImageStore, geminiProvider, huggingFaceProvider, pollinationsProvider, registerImageTools, type ImageProvider } from './modules/creative/image.service';
+import { registerEmailTools, type EmailController } from './modules/communication-manager/email/email.tools';
+import { GroqTranscriber, TranscriberChain } from './core/ai-engine/transcribe';
+import { EDGE_VOICES, EdgeSpeech, GROQ_VOICES, GroqSpeech, SARVAM_VOICES, Speaker } from './core/ai-engine/speech';
+import { SarvamSpeech, SarvamTranscriber } from './core/ai-engine/sarvam';
+import { ImageService, MongoImageStore, geminiProvider, groqSvgProvider, huggingFaceSpaceProvider, pollinationsProvider, registerImageTools, type ImageProvider } from './modules/creative/image.service';
 import { webChatRouter } from './routes/web.routes';
 import { MongoPushRepo, PushService, makeWebPushSender } from './modules/communication-manager/push/push.service';
 import { MongoSessionRepo } from './core/memory/session.repo';
@@ -51,8 +52,14 @@ async function main() {
   await Promise.all([MessageModel.syncIndexes(), ReminderModel.syncIndexes(), JobRunModel.syncIndexes(), SeenArticleModel.syncIndexes(), MemoryModel.syncIndexes()]);
 
   const groq = GroqService.fromConfig(config.groq);
-  const stt = new GroqTranscriber(config.groq.apiKeys);
-  const tts = new GroqSpeech(config.groq.apiKeys);
+  // Listening: Sarvam first (best for Indian English and Tamil), Whisper as the backup.
+  const stt = new TranscriberChain([...(config.sarvamKeys.length ? [new SarvamTranscriber(config.sarvamKeys)] : []), new GroqTranscriber(config.groq.apiKeys)]);
+  // Speaking: Sarvam voices first when a key is set, Microsoft neural voices otherwise (and as the backup).
+  const tts = new Speaker({ edge: new EdgeSpeech(), groq: new GroqSpeech(config.groq.apiKeys), ...(config.sarvamKeys.length ? { sarvam: new SarvamSpeech(config.sarvamKeys) } : {}) });
+  const voiceMenu = {
+    default: config.sarvamKeys.length ? 'sarvam:priya' : 'edge:en-IN-NeerjaNeural',
+    voices: [...(config.sarvamKeys.length ? SARVAM_VOICES : []), ...EDGE_VOICES, ...GROQ_VOICES],
+  };
   const reminders = new ReminderService(new MongoReminderRepo(), config.timezone);
   const registry = new ToolRegistry();
   registerReminderTools(registry, reminders);
@@ -66,17 +73,23 @@ async function main() {
   registerWebTools(registry, { crawlit });
   if (crawlit) void crawlit.health().then((ok) => (ok ? logger.info('Crawlit connected') : logger.warn('CRAWLIT_URL is set but Crawlit is not answering; falling back to the built-in page reader')));
   const em = config.email;
+  let emailDrafts: EmailController | undefined;
   if (em.brevoApiKey && em.senderEmail && em.ownerEmail) {
-    registerEmailTools(registry, new BrevoClient({ apiKey: em.brevoApiKey, senderEmail: em.senderEmail, senderName: em.senderName }), em.ownerEmail);
+    emailDrafts = registerEmailTools(registry, new BrevoClient({ apiKey: em.brevoApiKey, senderEmail: em.senderEmail, senderName: em.senderName }), em.ownerEmail, { ownerName: config.ownerName });
     logger.info('Email enabled (Brevo): MJ can email the owner');
   } else if (em.brevoApiKey) {
     logger.warn('BREVO_API_KEY is set but BREVO_SENDER_EMAIL or OWNER_EMAIL is missing: email disabled');
   }
-  // Picture generation: the best engine you gave a key for first, then the free no-key fallback.
+  // Picture generation. Groq has no image model, so by default MJ has Groq's language model DRAW vector graphics (no extra account).
+  // Better engines are used first if you add their key; the free Pollinations service is used only if you opt in.
   const imageProviders: ImageProvider[] = [
     ...(config.images.geminiKey ? [geminiProvider(config.images.geminiKey)] : []),
-    ...(config.images.hfToken ? [huggingFaceProvider(config.images.hfToken)] : []),
-    pollinationsProvider(config.images.pollinationsKey),
+    ...(config.images.hfToken ? [huggingFaceSpaceProvider(config.images.hfToken)] : []),
+    ...(config.images.pollinations ? [pollinationsProvider(config.images.pollinationsKey)] : []),
+    groqSvgProvider(async (system, user) => {
+      const r = await groq.chat([{ role: 'system', content: system }, { role: 'user', content: user }], { temperature: 0.7, maxTokens: 6500, models: config.groq.imageModels });
+      return r.content ?? '';
+    }),
   ];
   const imageStore = new MongoImageStore();
   registerImageTools(registry, new ImageService(imageProviders, imageStore));
@@ -93,7 +106,8 @@ async function main() {
       ? `(2) Every morning MJ prepares the news briefing from ${config.news.prepareTime} and sends it at ${config.news.digestTime} ${config.timezone}, together with the "MJ TIMES" newspaper as a PDF with photos. It covers Tamil Nadu, India and world politics and sports, Kollywood, Hollywood, box office and reviews. `
       : '') +
     'If the user asks when or whether they will get breaking news or the daily news, explain this directly and do NOT ask them for a region or topic. ' +
-    'Use the get_news tool only when the user asks for news right now on a specific topic.';
+    'Use the get_news tool only when the user asks for news right now on a specific topic. ' +
+    `The user's name is ${config.ownerName}. Always sign emails and letters you write for him as "${config.ownerName}", never with a placeholder like [Your Name]; in chat you still address him as Sir.`;
   const makeAgent = (channel: Channel, sessionId?: string) =>
     new Agent({
       ai: groq,
@@ -152,6 +166,7 @@ Reply "stop reminders" to stop these.` : text);
         stopReminder: (chatId, id) => reminders.cancel('telegram', chatId, id),
         transcribe: (a, m) => stt.transcribe(a, m, config.sttLanguage),
         getImage: (id) => imageStore.get(id),
+        emailDrafts,
         sendNewspaper: async (chatId) => {
           if (!digest) throw new Error('the daily newspaper is switched off');
           const file = await digest.newspaperNow();
@@ -186,7 +201,9 @@ Reply "stop reminders" to stop these.` : text);
         ownerChatId: ownerId,
         transcribe: (a, m, l) => stt.transcribe(a, m, l ?? config.sttLanguage),
         speak: (t, v) => tts.synth(t, v),
+        voices: voiceMenu,
         getImage: (id) => imageStore.get(id),
+        emailDrafts,
         sessions: new MongoSessionRepo(),
         storeFor: (sid) => new MongoMessageStore('telegram', sid),
         respondFor: (sid) => makeAgent('telegram', sid),
@@ -316,6 +333,7 @@ Reply "stop reminders" to stop these.` : text);
       newsAlerts: !!alerts,
       push: push.enabled,
       images: imageProviders.map((p) => p.name).join('+'),
+      speech: config.sarvamKeys.length ? `sarvam(${config.sarvamKeys.length} key${config.sarvamKeys.length > 1 ? 's' : ''})+whisper` : 'whisper',
     }),
   });
   const server = app.listen(config.port, () => {

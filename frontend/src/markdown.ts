@@ -33,3 +33,27 @@ export function renderMarkdown(text: string): string {
   const html = marked.parse(text, { async: false, breaks: true }) as string;
   return DOMPurify.sanitize(html, { FORBID_TAGS: ['style', 'script', 'iframe', 'object', 'embed', 'form', 'input'], FORBID_ATTR: ['style', 'srcset'] });
 }
+
+export interface DraftData {
+  id: string;
+  to: string;
+  subject: string;
+  body: string;
+}
+
+const FENCE = /```mj-email\n([\s\S]*?)\n```/g;
+
+/** Splits a reply into its text and any email draft cards the assistant attached to it. */
+export function splitDrafts(text: string): { text: string; drafts: DraftData[] } {
+  const drafts: DraftData[] = [];
+  const rest = text.replace(FENCE, (_m, json: string) => {
+    try {
+      const d = JSON.parse(json) as Partial<DraftData>;
+      if (typeof d.id === 'string' && typeof d.to === 'string' && typeof d.subject === 'string' && typeof d.body === 'string') drafts.push(d as DraftData);
+    } catch {
+      /* a damaged card is simply not shown */
+    }
+    return '';
+  });
+  return { text: rest.trim(), drafts };
+}

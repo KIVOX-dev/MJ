@@ -8,7 +8,7 @@ import {
   ImageBusy,
   ImageService,
   geminiProvider,
-  huggingFaceProvider,
+  huggingFaceSpaceProvider,
   pollinationsProvider,
   registerImageTools,
   type GeneratedImage,
@@ -57,12 +57,35 @@ describe('providers', () => {
     expect(JSON.parse(init.body).generationConfig.imageConfig.aspectRatio).toBe('16:9');
   });
 
-  it('Hugging Face: sends the prompt and size and returns the bytes', async () => {
-    const f = vi.fn().mockResolvedValue({ ok: true, status: 200, arrayBuffer: async () => new Uint8Array(PNG).buffer });
-    const out = await huggingFaceProvider('TOKEN', f as unknown as typeof fetch).generate('a dog', 'portrait');
+  it('Hugging Face FLUX Space: starts the job, reads the event stream, downloads only from the Space, and uses the token', async () => {
+    const space = 'https://black-forest-labs-flux-1-schnell.hf.space';
+    const stream = `event: generating\ndata: null\n\nevent: complete\ndata: [{"url":"${space}/gradio_api/file=/tmp/x/image.png"},123]\n\n`;
+    const f = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ event_id: 'abc123' }) })
+      .mockResolvedValueOnce({ ok: true, status: 200, text: async () => stream })
+      .mockResolvedValueOnce({ ok: true, status: 200, arrayBuffer: async () => new Uint8Array(PNG).buffer });
+    const out = await huggingFaceSpaceProvider('TOKEN', f as unknown as typeof fetch).generate('a dog', 'portrait');
     expect(out.mime).toBe('image/png');
+    expect(f.mock.calls[0]![0]).toBe(`${space}/gradio_api/call/infer`);
     expect(f.mock.calls[0]![1].headers.Authorization).toBe('Bearer TOKEN');
-    expect(JSON.parse(f.mock.calls[0]![1].body)).toMatchObject({ inputs: 'a dog', parameters: { width: 768, height: 1344 } });
+    expect(JSON.parse(f.mock.calls[0]![1].body).data).toEqual(['a dog', 0, true, 768, 1344, 4]);
+    expect(f.mock.calls[1]![0]).toBe(`${space}/gradio_api/call/infer/abc123`);
+    expect(f.mock.calls[2]![0]).toBe(`${space}/gradio_api/file=/tmp/x/image.png`);
+  });
+
+  it('Hugging Face FLUX Space: a used-up allowance or full queue means "busy"; a picture URL from anywhere else is refused', async () => {
+    const mk = (streamText: string, startStatus = 200) =>
+      vi
+        .fn()
+        .mockResolvedValueOnce({ ok: startStatus === 200, status: startStatus, json: async () => ({ event_id: 'e1' }) })
+        .mockResolvedValueOnce({ ok: true, status: 200, text: async () => streamText });
+    const quota = mk('event: error\ndata: "You have exceeded your GPU quota"\n\n');
+    await expect(huggingFaceSpaceProvider('T', quota as unknown as typeof fetch).generate('x', 'square')).rejects.toBeInstanceOf(ImageBusy);
+    await expect(huggingFaceSpaceProvider('T', mk('', 429) as unknown as typeof fetch).generate('x', 'square')).rejects.toBeInstanceOf(ImageBusy);
+    const evil = mk('event: complete\ndata: [{"url":"https://evil.example/steal.png"}]\n\n');
+    await expect(huggingFaceSpaceProvider('T', evil as unknown as typeof fetch).generate('x', 'square')).rejects.toThrow(/no picture/);
+    expect(evil).toHaveBeenCalledTimes(2); // it never tried to download from the other address
   });
 
   it('Pollinations: reports its free-limit wait, and rejects non-pictures', async () => {
@@ -148,5 +171,17 @@ describe('pictures in Telegram', () => {
     );
     expect(sender.sendText).toHaveBeenCalledWith(555, 'Done, Sir.');
     expect(sender.sendPhoto).toHaveBeenCalledWith(555, PNG, 'image/png');
+  });
+});
+
+describe('reading pictures back from the database', () => {
+  it('turns MongoDB binary data into real bytes, whichever form the driver returns', async () => {
+    const { binaryToBuffer } = await import('../src/modules/creative/image.service');
+    const { mongo } = await import('mongoose');
+    expect(binaryToBuffer(new mongo.Binary(PNG)).equals(PNG)).toBe(true); // the form a plain query returns (this used to come back empty)
+    expect(binaryToBuffer(PNG).equals(PNG)).toBe(true);
+    expect(binaryToBuffer(new Uint8Array(PNG)).equals(PNG)).toBe(true);
+    expect(binaryToBuffer(null).length).toBe(0);
+    expect(binaryToBuffer({}).length).toBe(0);
   });
 });

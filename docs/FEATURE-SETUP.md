@@ -1,35 +1,32 @@
-# Feature setup: pictures, natural voice, attachments, email to others
+# Feature setup: pictures, voices, attachments, email
 
-## Picture generation ("draw me...")
-Ask in the app or in Telegram: "Draw a futuristic city at sunset", "Make a logo for my bakery", "A portrait poster of a lion, watercolor".
-MJ writes a detailed prompt for you, creates the picture, and shows it as a card (tap to enlarge or download). In Telegram it arrives as a photo.
+All keys go in AppSail → Configuration (and `backend/.env` for local runs). After changing them, **restart** the app. `GET /health` shows what is switched on under `features`.
 
-Engines are tried best first. Set the keys you have in AppSail → Configuration (and `backend/.env`):
+## Pictures ("draw me...")
+Ask in the app or Telegram: "Draw a futuristic city at sunset", "Make a logo for my bakery".
+Engines are tried best first:
 
-| Setting | Engine | Quality | Cost |
+| Setting | Engine | Result | Cost |
 |---|---|---|---|
-| `GEMINI_API_KEY` | Google Gemini image model | Best, writes readable text inside pictures | Free key from https://aistudio.google.com/apikey (free allowance may be limited) |
-| `HF_TOKEN` | FLUX.1 on Hugging Face | Very good | Free token from https://huggingface.co/settings/tokens ("Make calls to Inference Providers") |
-| `POLLINATIONS_API_KEY` (optional) | Pollinations FLUX | Good | Works with no key, but adds a watermark and allows about 1 picture per 45 s. A free key removes that. |
+| `GEMINI_API_KEY` (optional) | Google Gemini | Best, readable text inside pictures | Free key from Google AI Studio (allowance may be limited) |
+| `HF_TOKEN` | **FLUX.1 on a free Hugging Face Space** | Real, ChatGPT-style pictures (about 6-10 s) | Free: uses your free daily GPU allowance. Create a token at huggingface.co/settings/tokens |
+| *(nothing needed)* | Groq draws vector graphics | Logos, icons, posters, illustrations (not photos) | Free, uses Groq |
 
-With no keys, the no-key Pollinations fallback is used. Pictures are stored for 30 days. A daily limit of 40 protects your allowance.
-`GET /health` shows which engines are active under `features.images`.
+If the Hugging Face allowance is used up or the Space is busy, MJ falls back to the Groq drawing engine automatically. Hugging Face's own paid "Inference Providers" are not used (they need pre-paid credits).
+Pictures are stored 30 days. A daily limit of 40 protects your allowance.
 
-## Natural voice for replies
-The phone's own voices sound robotic. MJ can use Groq's natural **Orpheus** voices (Hannah, Diana, Autumn, Austin, Daniel, Troy).
-One-time step: a Groq admin must accept the model terms at
-https://console.groq.com/playground?model=canopylabs%2Forpheus-v1-english (open it, click **Accept**).
-Then choose a voice in the app: Settings → Voice. Until then, or for Tamil text, MJ uses the phone voice automatically.
+## Voices (listening and speaking)
+- `SARVAM_API_KEY`: Sarvam AI. **Human-sounding voices** (Priya, Ritu, Kavya, Shubh...) in English and Tamil, and very accurate transcription of Indian English and Tamil. Works on Sarvam's free plan. You can put several keys, separated by commas; they are used in turn.
+- Without Sarvam: Whisper for listening and Microsoft neural voices (Neerja, Prabhat, Pallavi...) for speaking. These also work with no account.
+- If Sarvam is down or its free allowance is used up, MJ switches to Whisper and the Microsoft voices by itself.
+- In the app: Settings → Voice to choose the voice; the headphone icon opens **voice mode** (talk hands-free, like ChatGPT).
+- `STT_LANGUAGE=en` (or `ta`) is the default language hint for Telegram voice notes. In the app you can choose it under Settings → Voice.
 
-## Better voice transcription
-- Settings → Voice → **Language I speak to MJ**: choose English or Tamil instead of Automatic. This is the biggest accuracy gain for accented speech.
-- Server default for Telegram voice notes: set `STT_LANGUAGE=en` (or `ta`).
-- MJ uses the most accurate Whisper model first and a vocabulary hint (names, places, "MJ", "reminder").
-
-## Attachments
-Use the paperclip in the message box: up to 4 files per message.
-- Photos (JPEG/PNG): resized on the phone, then read by the vision model.
-- PDFs (up to 6 MB) and text files (up to 2 MB): read as text. Scanned PDFs without text need photos of the pages instead.
+## Your name
+`OWNER_NAME` (default `Kaviarasan M`): emails MJ writes for you are signed with it. In chat MJ still says "Sir".
 
 ## Emailing other people
-"Send an email to someone@example.com saying hi". MJ writes a draft and shows you the recipient, subject and text. It sends only after you say yes in a **new** message. Replies go to your own address, and at most 20 emails to others per day are sent.
+"Send an email to someone@example.com about..." MJ writes a draft and shows a card (app) or message (Telegram) with a **Send** button. Nothing is sent until you tap Send; you can edit the subject and text first. It goes through Brevo as "<your name> via MJ", replies come to your own address, and at most 20 emails to others are sent per day.
+
+## Attachments
+Paperclip in the message box, up to 4 files: photos (JPEG/PNG, resized on the phone), PDFs (6 MB) and text files (2 MB).

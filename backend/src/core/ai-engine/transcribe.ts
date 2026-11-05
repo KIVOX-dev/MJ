@@ -56,3 +56,20 @@ export class GroqTranscriber {
     throw new Error(`Transcription failed (${lastErr})`);
   }
 }
+
+/** Tries each transcriber in turn (for example Sarvam, then Whisper). An empty transcript is a valid answer ("nothing was said"), not a failure. */
+export class TranscriberChain {
+  constructor(private readonly list: Array<{ transcribe(audio: Buffer, mime: string, language?: string): Promise<string> }>) {}
+
+  async transcribe(audio: Buffer, mime: string, language?: string): Promise<string> {
+    let last: unknown;
+    for (const t of this.list) {
+      try {
+        return await t.transcribe(audio, mime, language);
+      } catch (err) {
+        last = err;
+      }
+    }
+    throw last instanceof Error ? last : new Error('Transcription failed');
+  }
+}

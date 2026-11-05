@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowUp, Bell, Check, Copy, Download, FileText, Menu, MessageSquare, Mic, Paperclip, Pencil, RotateCcw, Settings as Cog, SquarePen, Square, Trash2, Volume2, VolumeX, X } from 'lucide-react';
+import { ArrowUp, AudioLines, Bell, Check, Copy, Download, FileText, Menu, MessageSquare, Mic, Paperclip, Pencil, RotateCcw, Settings as Cog, SquarePen, Square, Trash2, Volume2, VolumeX, X } from 'lucide-react';
 import {
   createSession,
   deleteSession,
@@ -15,7 +15,10 @@ import {
   type Session,
   type Settings,
 } from './api';
-import { renderMarkdown, setImageBase } from './markdown';
+import { renderMarkdown, setImageBase, splitDrafts } from './markdown';
+import { DraftCard } from './cards';
+import { VoiceMode } from './VoiceMode';
+import { ImageCreating, wantsImage, type Aspect } from './creating';
 import { MAX_FILES, prepareFile, type Pending } from './attach';
 import { NotificationsPanel, SettingsPanel } from './panels';
 import { refreshSubscription, registerServiceWorker, writeSwConfig } from './push';
@@ -67,6 +70,8 @@ export function App() {
   const [transcribing, setTranscribing] = useState(false);
   const [files, setFiles] = useState<Pending[]>([]);
   const [lightbox, setLightbox] = useState<string | null>(null);
+  const [voiceOpen, setVoiceOpen] = useState(false);
+  const [creating, setCreating] = useState<Aspect | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const recRef = useRef<Recording | null>(null);
   const endRef = useRef<HTMLDivElement>(null);
@@ -195,10 +200,13 @@ export function App() {
 
   // ---- sending ----
   const send = useCallback(
-    async (raw: string) => {
+    async (raw: string, opts: { quiet?: boolean } = {}): Promise<string | undefined> => {
       const q = raw.trim();
-      if ((!q && !files.length) || busy) return;
-      if (!settings.token) return setPanel('settings');
+      if ((!q && !files.length) || busy) return undefined;
+      if (!settings.token) {
+        setPanel('settings');
+        return undefined;
+      }
       const sid = activeId;
       const sending = files;
       unlockSpeech(); // runs inside the tap so spoken replies are allowed later
@@ -207,6 +215,7 @@ export function App() {
       setText('');
       setBusy(true);
       setFiles([]);
+      setCreating(wantsImage(q));
       put(sid, (m) => [
         ...m.filter((x) => x.role !== 'error'),
         { id: uid(), role: 'user', text: q, at: Date.now(), files: sending.length ? sending.map((f) => ({ name: f.name, mime: f.mime, preview: f.preview })) : undefined },
@@ -216,16 +225,19 @@ export function App() {
         setStatus('online');
         const id = uid();
         put(sid, (m) => [...m, { id, role: 'assistant', text: reply, at: Date.now() }]);
-        if (canSpeak() && speakAll && !isFailureReply(reply)) {
+        if (canSpeak() && speakAll && !opts.quiet && !isFailureReply(reply)) {
           setSpeakingId(id);
           speak(reply, () => setSpeakingId((cur) => (cur === id ? null : cur)), settings);
         }
         if (sid !== 'main') void listSessions(settings).then(setSessions);
+        return reply;
       } catch (e) {
         setStatus('offline');
         fail(sid, (e as Error).message);
+        return undefined;
       } finally {
         setBusy(false);
+        setCreating(null);
       }
     },
     [activeId, busy, fail, files, put, settings, speakAll],
@@ -318,9 +330,60 @@ export function App() {
     }
     if (fileRef.current) fileRef.current.value = '';
   };
+  // Pictures fade in from a soft blur once they have loaded (like ChatGPT); a picture that fails to load can be tapped to retry.
+  const streamRef = useRef<HTMLElement>(null);
+  const retryImage = (img: HTMLImageElement) => {
+    img.classList.remove('broken', 'loaded');
+    const base = img.src.replace(/[?&]r=\d+$/, '');
+    img.src = `${base}${base.includes('?') ? '&' : '?'}r=${Date.now()}`;
+  };
+  useEffect(() => {
+    const el = streamRef.current;
+    if (!el) return;
+    const mark = (img: HTMLImageElement) => {
+      if (img.complete && img.naturalWidth > 0) img.classList.add('loaded');
+      else if (img.complete) img.classList.add('broken');
+    };
+    el.querySelectorAll<HTMLImageElement>('img.gen-img').forEach(mark);
+    const onLoad = (e: Event) => {
+      const t = e.target as HTMLElement;
+      if (t.tagName === 'IMG' && t.classList.contains('gen-img')) (t as HTMLImageElement).classList.add('loaded');
+    };
+    const onError = (e: Event) => {
+      const t = e.target as HTMLElement;
+      if (t.tagName === 'IMG' && t.classList.contains('gen-img')) (t as HTMLImageElement).classList.add('broken');
+    };
+    el.addEventListener('load', onLoad, true);
+    el.addEventListener('error', onError, true);
+    return () => {
+      el.removeEventListener('load', onLoad, true);
+      el.removeEventListener('error', onError, true);
+    };
+  }, [messages, activeId]);
+
+  // Saves the picture reliably (a plain download link fails for pictures from another address, or when it was not ready).
+  const savePicture = async (src: string) => {
+    try {
+      const blob = await (await fetch(src)).blob();
+      if (!blob.size || !blob.type.startsWith('image/')) throw new Error('not an image');
+      const ext = blob.type.includes('png') ? 'png' : blob.type.includes('webp') ? 'webp' : 'jpg';
+      const file = new File([blob], `mj-image.${ext}`, { type: blob.type });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = file.name;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+    } catch {
+      window.open(src, '_blank', 'noopener'); // last resort: open it so it can be saved by long-pressing
+    }
+  };
+
   const copy = async (m: Msg) => {
     try {
-      await navigator.clipboard.writeText(m.text);
+      await navigator.clipboard.writeText(splitDrafts(m.text).text);
       setCopied(m.id);
       setTimeout(() => setCopied((c) => (c === m.id ? '' : c)), 1500);
     } catch {
@@ -344,6 +407,11 @@ export function App() {
             {status === 'online' ? 'Online' : status === 'offline' ? 'Offline' : 'Connecting'}
           </span>
         </div>
+        {canRecord() && (
+          <button className="icon-btn" aria-label="Voice mode" onClick={() => (unlockSpeech(), setVoiceOpen(true))}>
+            <AudioLines size={21} />
+          </button>
+        )}
         {canSpeak() && (
           <button className={`icon-btn ${speakAll ? 'on' : ''}`} aria-label={speakAll ? 'Turn off spoken replies' : 'Speak every reply'} aria-pressed={speakAll} onClick={() => toggleSpeakAll()}>
             {speakAll ? <Volume2 size={21} /> : <VolumeX size={21} />}
@@ -359,11 +427,16 @@ export function App() {
       </header>
 
       <main
+        ref={streamRef}
         className="stream"
         aria-live="polite"
         onClick={(e) => {
           const t = e.target as HTMLElement;
-          if (t.tagName === 'IMG' && t.classList.contains('gen-img')) setLightbox((t as HTMLImageElement).src);
+          if (t.tagName === 'IMG' && t.classList.contains('gen-img')) {
+            const img = t as HTMLImageElement;
+            if (img.classList.contains('broken')) retryImage(img);
+            else setLightbox(img.src);
+          }
         }}
       >
         {empty && (
@@ -386,7 +459,10 @@ export function App() {
             <div key={m.id} className="row ai">
               <img className="avatar" src="/logo.png" alt="" width={28} height={28} />
               <div className="ai-body">
-                <div className="md" dangerouslySetInnerHTML={{ __html: renderMarkdown(m.text) }} />
+                <div className="md" dangerouslySetInnerHTML={{ __html: renderMarkdown(splitDrafts(m.text).text) }} />
+                {splitDrafts(m.text).drafts.map((d) => (
+                  <DraftCard key={d.id} draft={d} settings={settings} />
+                ))}
                 <div className="meta">
                   <time>{clock(m.at)}</time>
                   <button className="act" aria-label="Copy" onClick={() => void copy(m)}>
@@ -443,11 +519,15 @@ export function App() {
         {busy && (
           <div className="row ai">
             <img className="avatar" src="/logo.png" alt="" width={28} height={28} />
-            <div className="typing" aria-label="MJ is typing">
-              <i />
-              <i />
-              <i />
-            </div>
+            {creating ? (
+              <ImageCreating aspect={creating} />
+            ) : (
+              <div className="typing" aria-label="MJ is typing">
+                <i />
+                <i />
+                <i />
+              </div>
+            )}
           </div>
         )}
         <div ref={endRef} />
@@ -529,12 +609,14 @@ export function App() {
         )}
       </form>
 
+      {voiceOpen && <VoiceMode settings={settings} ask={(t) => send(t, { quiet: true })} onClose={() => setVoiceOpen(false)} />}
+
       {lightbox && (
         <div className="lightbox" onClick={() => setLightbox(null)}>
           <div className="lb-bar" onClick={(e) => e.stopPropagation()}>
-            <a href={lightbox} download="mj-image.jpg" className="lb-btn" aria-label="Download">
+            <button className="lb-btn" aria-label="Download" onClick={() => void savePicture(lightbox)}>
               <Download size={20} />
-            </a>
+            </button>
             <button className="lb-btn" aria-label="Close" onClick={() => setLightbox(null)}>
               <X size={22} />
             </button>

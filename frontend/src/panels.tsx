@@ -13,7 +13,7 @@ import {
   type Settings,
 } from './api';
 import { disablePush, enablePush, isIos, pushState, type PushState } from './push';
-import { NATURAL_VOICES, canSpeak, listVoices, readSttLang, readVoiceName, speak, speechNote, writeSttLang, writeVoiceName, type SttLang } from './voice';
+import { GROQ_VOICES, NEURAL_VOICES, canSpeak, listVoices, readSttLang, readVoiceName, speak, speechNote, writeSttLang, writeVoiceName, type SttLang } from './voice';
 
 const ICONS: Record<Category, typeof BellRing> = { reminder: AlarmClock, alert: Siren, news: Newspaper, system: Sparkles };
 const LABELS: Record<Category, string> = { reminder: 'Reminders', alert: 'Breaking news alerts', news: 'Morning news briefing', system: 'MJ messages' };
@@ -279,7 +279,7 @@ export function SettingsPanel(p: {
                   <span>Speak every reply aloud</span>
                   <Switch on={p.speakAll} onChange={p.onSpeakAll} label="Speak every reply aloud" />
                 </div>
-                {(voices.length > 0 || NATURAL_VOICES.length > 0) && (
+                {(voices.length > 0 || NEURAL_VOICES.length > 0) && (
                   <label className="field">
                     Voice
                     <select
@@ -289,8 +289,15 @@ export function SettingsPanel(p: {
                         writeVoiceName(e.target.value);
                       }}
                     >
-                      <optgroup label="Natural voices (English)">
-                        {NATURAL_VOICES.map((v) => (
+                      <optgroup label="Human-sounding voices">
+                        {NEURAL_VOICES.map((v) => (
+                          <option key={v.id} value={v.id}>
+                            {v.label}
+                          </option>
+                        ))}
+                      </optgroup>
+                      <optgroup label="Groq voices (need a one-time approval)">
+                        {GROQ_VOICES.map((v) => (
                           <option key={v.id} value={v.id}>
                             {v.label}
                           </option>

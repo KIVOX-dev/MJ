@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { logger } from '../../utils/logger';
 import { GeneratedImageModel } from '../../models/image.model';
 import type { ToolRegistry } from '../../core/tool-registry';
+import { cleanSvg, renderSvg } from './svg';
 
 export type Aspect = 'square' | 'landscape' | 'portrait';
 const SIZES: Record<Aspect, [number, number]> = { square: [1024, 1024], landscape: [1344, 768], portrait: [768, 1344] };
@@ -67,21 +68,49 @@ export function geminiProvider(apiKey: string, fetchFn: typeof fetch = fetch): I
   };
 }
 
-/** Hugging Face FLUX.1: very good quality with a free monthly allowance. Needs HF_TOKEN (free access token). */
-export function huggingFaceProvider(token: string, fetchFn: typeof fetch = fetch): ImageProvider {
+/**
+ * FLUX.1-schnell on the official Black Forest Labs Hugging Face Space: a real FLUX picture for free (the Space runs on shared GPUs).
+ * With HF_TOKEN the pictures count against your own free daily GPU allowance; when that is used up, or the Space is asleep or busy,
+ * this engine reports "busy" and the next engine takes over.
+ */
+const FLUX_SPACE = 'https://black-forest-labs-flux-1-schnell.hf.space';
+
+export function huggingFaceSpaceProvider(token: string, fetchFn: typeof fetch = fetch, space = FLUX_SPACE): ImageProvider {
+  const headers = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
   return {
-    name: 'huggingface',
+    name: 'huggingface-flux',
     async generate(prompt, aspect) {
       const [width, height] = SIZES[aspect];
-      const res = await fetchFn('https://router.huggingface.co/hf-inference/models/black-forest-labs/FLUX.1-schnell', {
+      const start = await fetchFn(`${space}/gradio_api/call/infer`, {
         method: 'POST',
-        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', Accept: 'image/png' },
-        body: JSON.stringify({ inputs: prompt, parameters: { width, height, num_inference_steps: 4 } }),
-        signal: AbortSignal.timeout(90_000),
+        headers,
+        body: JSON.stringify({ data: [prompt.slice(0, 900), 0, true, width, height, 4] }), // prompt, seed, random seed, size, steps
+        signal: AbortSignal.timeout(30_000),
       });
-      if (res.status === 429 || res.status === 402) throw new ImageBusy('huggingface');
-      if (!res.ok) throw new Error(`huggingface failed (${res.status})`);
-      return asImage(res, 'huggingface');
+      if (start.status === 429 || start.status === 503) throw new ImageBusy('huggingface-flux');
+      if (!start.ok) throw new Error(`huggingface-flux failed (${start.status})`);
+      const id = ((await start.json()) as { event_id?: string }).event_id;
+      if (!id) throw new Error('huggingface-flux gave no job id');
+      // the result arrives as a stream of events that ends when the picture is ready
+      const done = await fetchFn(`${space}/gradio_api/call/infer/${encodeURIComponent(id)}`, { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(120_000) });
+      if (!done.ok) throw new Error(`huggingface-flux failed (${done.status})`);
+      const events = [...(await done.text()).matchAll(/event: (\w+)\r?\ndata: (.*)/g)];
+      const last = events[events.length - 1];
+      if (!last || last[1] !== 'complete') {
+        // "error" events carry the reason; a used-up GPU allowance or a full queue both mean "try again later"
+        throw /quota|limit|queue|busy|exceeded/i.test(last?.[2] ?? '') || last?.[2] === 'null' ? new ImageBusy('huggingface-flux') : new Error('huggingface-flux could not make the picture');
+      }
+      let url: string | undefined;
+      try {
+        url = (JSON.parse(last[2] ?? '[]') as Array<{ url?: string }>)[0]?.url;
+      } catch {
+        /* handled below */
+      }
+      // only ever download from the Space itself
+      if (!url || !url.startsWith(`${space}/gradio_api/file=`)) throw new Error('huggingface-flux returned no picture');
+      const img = await fetchFn(url, { signal: AbortSignal.timeout(60_000) });
+      if (!img.ok) throw new Error(`huggingface-flux picture download failed (${img.status})`);
+      return asImage(img, 'huggingface-flux');
     },
   };
 }
@@ -105,6 +134,46 @@ export function pollinationsProvider(apiKey?: string, fetchFn: typeof fetch = fe
   };
 }
 
+const SVG_SYSTEM = (w: number, h: number) =>
+  'You are a senior vector graphic designer. Reply with ONE complete SVG document and nothing else: no markdown, no explanation. ' +
+  `Use viewBox="0 0 ${w} ${h}" width="${w}" height="${h}". Fill the whole canvas with a deliberate background (a gradient or a scene). ` +
+  'Use only shapes, paths, groups, linearGradient/radialGradient, clipPath, opacity, transforms and simple filters (feGaussianBlur, feDropShadow). ' +
+  'Never use <script>, <image>, <foreignObject>, external links or external fonts. ' +
+  'Style: modern, polished, professional illustration: rich harmonious colours, depth with gradients, soft shadows and highlights, clear focal point, balanced composition, smooth curves, consistent stroke widths. ' +
+  'Build recognisable subjects from several well-shaped layers (not a few plain circles). ' +
+  'Any text must be spelled exactly as requested, short, large and readable, with font-family="DejaVu Sans, Arial, sans-serif" and text-anchor set so it stays inside the canvas.';
+
+/**
+ * Pictures drawn as vector graphics by a Groq language model, then rendered to PNG. Needs no extra account or key.
+ * Great for logos, icons, posters, stickers, diagrams and illustrated scenes; it is not a photograph generator.
+ */
+export function groqSvgProvider(chat: (system: string, user: string) => Promise<string>, render: (svg: string) => Buffer = (v) => renderSvg(v)): ImageProvider {
+  return {
+    name: 'groq-vector',
+    async generate(prompt, aspect) {
+      const [w, h] = aspect === 'square' ? [1024, 1024] : aspect === 'landscape' ? [1344, 768] : [768, 1344];
+      let lastErr = 'no drawing';
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const reply = await chat(SVG_SYSTEM(w, h), attempt ? `${prompt}\n\n(The previous attempt was not valid SVG: ${lastErr}. Return a complete, valid, well-formed SVG.)` : prompt);
+        const svg = cleanSvg(reply);
+        if (!svg) {
+          lastErr = 'no <svg> document found';
+          continue;
+        }
+        try {
+          const data = render(svg);
+          const mime = sniff(data);
+          if (mime) return { data, mime };
+          lastErr = 'could not render';
+        } catch (err) {
+          lastErr = (err as Error).message.slice(0, 120);
+        }
+      }
+      throw new Error(`vector drawing failed (${lastErr})`);
+    },
+  };
+}
+
 export interface ImageStore {
   save(img: GeneratedImage, prompt: string): Promise<string>;
   get(id: string): Promise<GeneratedImage | undefined>;
@@ -118,9 +187,19 @@ export class MongoImageStore implements ImageStore {
   }
   async get(id: string): Promise<GeneratedImage | undefined> {
     if (!/^[a-f0-9]{32}$/.test(id)) return undefined;
-    const d = await GeneratedImageModel.findOne({ imageId: id }).lean();
-    return d ? { data: Buffer.from(d.data as unknown as Uint8Array), mime: d.mime as GeneratedImage['mime'] } : undefined;
+    const d = await GeneratedImageModel.findOne({ imageId: id });
+    if (!d) return undefined;
+    const data = binaryToBuffer(d.data);
+    return data.length ? { data, mime: d.mime as GeneratedImage['mime'] } : undefined;
   }
+}
+
+/** MongoDB hands binary data back as a Buffer (normal documents) or a BSON Binary (lean queries). Both must become real bytes. */
+export function binaryToBuffer(x: unknown): Buffer {
+  if (Buffer.isBuffer(x)) return x;
+  const bin = x as { buffer?: Uint8Array; position?: number } | null;
+  if (bin?.buffer instanceof Uint8Array) return Buffer.from(bin.buffer.subarray(0, bin.position ?? bin.buffer.length));
+  return x instanceof Uint8Array ? Buffer.from(x) : Buffer.alloc(0);
 }
 
 export class ImageService {
@@ -165,11 +244,14 @@ export class ImageService {
 
 /** The tool the assistant calls. It must be given a rich English prompt, which is what makes the pictures look good. */
 export function registerImageTools(registry: ToolRegistry, svc: ImageService): void {
+  const vectorOnly = svc.providerNames.every((n) => n === 'groq-vector');
   registry.register({
     name: 'generate_image',
     description:
       'Create a picture. Use when Sir asks to draw, design, generate or make an image, picture, logo, poster, wallpaper, illustration, avatar, sticker, cartoon or art. ' +
-      'First turn his request into ONE rich English prompt (under 120 words): the subject, setting, art style (photorealistic, 3D render, flat vector, watercolor, anime, oil painting...), lighting, colours, camera or composition and mood. ' +
+      (vectorOnly
+        ? 'Pictures are clean vector illustrations (not photographs): describe a logo, icon, poster, sticker, diagram, cartoon or illustrated scene, with the subject, its parts, a colour palette, mood and composition. If Sir wants a real photograph, say honestly that you draw illustrations and offer that instead. '
+        : 'First turn his request into ONE rich English prompt (under 120 words): the subject, setting, art style (photorealistic, 3D render, flat vector, watercolor, anime, oil painting...), lighting, colours, camera or composition and mood. ') +
       'Put any words that must appear inside the picture in double quotes. Choose aspect: square (default, logos, avatars), landscape (wallpapers, scenes) or portrait (posters, phone wallpapers).',
     schema: z.object({
       prompt: z.string().trim().min(3).max(1200).describe('Detailed English description of the picture'),

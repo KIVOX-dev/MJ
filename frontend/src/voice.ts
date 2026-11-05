@@ -1,24 +1,30 @@
 import { fetchSpeech, type Settings } from './api';
-import { renderMarkdown } from './markdown';
+import { renderMarkdown, splitDrafts } from './markdown';
 
 export const canRecord = () => typeof navigator !== 'undefined' && !!navigator.mediaDevices?.getUserMedia && typeof MediaRecorder !== 'undefined';
 export const canSpeak = () => typeof window !== 'undefined' && ('speechSynthesis' in window || 'Audio' in window);
 
+// ---------------------------------------------------------------- recording
 export interface Recording {
   stop(): Promise<Blob>;
   cancel(): void;
 }
 
-/** Starts the microphone. Rejects with a friendly Error if it is blocked or unavailable (needs https or localhost). */
-export async function startRecording(): Promise<Recording> {
+const pickMime = () => ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg;codecs=opus'].find((m) => MediaRecorder.isTypeSupported(m));
+
+async function openMic(): Promise<MediaStream> {
   if (!canRecord()) throw new Error('Voice needs a secure (https) page and a browser that can record audio.');
-  let stream: MediaStream;
   try {
-    stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+    return await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
   } catch {
     throw new Error('Microphone access was blocked. Allow it in your browser settings and try again.');
   }
-  const mime = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg;codecs=opus'].find((m) => MediaRecorder.isTypeSupported(m));
+}
+
+/** Press-to-talk recording (the mic button in the message box). */
+export async function startRecording(): Promise<Recording> {
+  const stream = await openMic();
+  const mime = pickMime();
   // A higher bitrate keeps consonants clear, which is what the transcriber struggles with first.
   const rec = new MediaRecorder(stream, { ...(mime ? { mimeType: mime } : {}), audioBitsPerSecond: 128_000 });
   const chunks: Blob[] = [];
@@ -36,8 +42,7 @@ export async function startRecording(): Promise<Recording> {
         };
         if (rec.state === 'inactive') return done();
         rec.onstop = done;
-        // keep recording for a moment so the last word is not cut off
-        setTimeout(() => rec.state !== 'inactive' && rec.stop(), 350);
+        setTimeout(() => rec.state !== 'inactive' && rec.stop(), 350); // keep recording a moment so the last word is not cut off
       }),
     cancel: () => {
       rec.onstop = null;
@@ -47,13 +52,98 @@ export async function startRecording(): Promise<Recording> {
   };
 }
 
-/** Plain, speakable text from a Markdown reply. */
+export interface Listener {
+  /** The recorded speech, or null if nothing was said for a while or listening was cancelled. */
+  done: Promise<Blob | null>;
+  /** Stop now and send what was said (the user tapped). */
+  finish(): void;
+  cancel(): void;
+}
+
+/**
+ * Hands-free listening for voice mode: starts recording, notices when the person starts talking and when they stop
+ * (a pause of about a second), then returns the speech. `onLevel` reports the live mic loudness (0..1) for the animation.
+ */
+export async function listen(onLevel: (level: number) => void, o: { endSilenceMs?: number; waitMs?: number; maxMs?: number } = {}): Promise<Listener> {
+  const endSilence = o.endSilenceMs ?? 1100;
+  const waitMs = o.waitMs ?? 12_000;
+  const maxMs = o.maxMs ?? 45_000;
+  const stream = await openMic();
+  const mime = pickMime();
+  const rec = new MediaRecorder(stream, { ...(mime ? { mimeType: mime } : {}), audioBitsPerSecond: 128_000 });
+  const chunks: Blob[] = [];
+  rec.ondataavailable = (e) => {
+    if (e.data.size) chunks.push(e.data);
+  };
+
+  const Ctx = window.AudioContext ?? (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+  const ctx = new Ctx();
+  const analyser = ctx.createAnalyser();
+  analyser.fftSize = 1024;
+  ctx.createMediaStreamSource(stream).connect(analyser);
+  const buf = new Uint8Array(analyser.fftSize);
+
+  let resolve!: (b: Blob | null) => void;
+  const done = new Promise<Blob | null>((r) => (resolve = r));
+  let finished = false;
+  let spoke = false;
+  let lastVoice = 0;
+  const started = Date.now();
+  let noise = 0.012; // adapts to the room's background noise
+  let calibrate = 8;
+
+  const end = (keep: boolean) => {
+    if (finished) return;
+    finished = true;
+    clearInterval(timer);
+    onLevel(0);
+    void ctx.close().catch(() => undefined);
+    const release = () => stream.getTracks().forEach((t) => t.stop());
+    if (!keep) {
+      rec.onstop = null;
+      if (rec.state !== 'inactive') rec.stop();
+      release();
+      return resolve(null);
+    }
+    rec.onstop = () => {
+      release();
+      resolve(new Blob(chunks, { type: rec.mimeType || mime || 'audio/webm' }));
+    };
+    setTimeout(() => rec.state !== 'inactive' && rec.stop(), 250);
+  };
+
+  const timer = setInterval(() => {
+    analyser.getByteTimeDomainData(buf);
+    let sum = 0;
+    for (const v of buf) sum += ((v - 128) / 128) ** 2;
+    const rms = Math.sqrt(sum / buf.length);
+    onLevel(Math.min(1, rms * 5));
+    const now = Date.now();
+    if (calibrate > 0) {
+      noise = Math.max(noise, Math.min(rms * 1.2, 0.05));
+      calibrate--;
+      return;
+    }
+    if (rms > Math.max(noise * 2.6, 0.03)) {
+      spoke = true;
+      lastVoice = now;
+    } else if (!spoke) noise = noise * 0.97 + rms * 0.03;
+    if (spoke && now - lastVoice > endSilence) end(true);
+    else if (!spoke && now - started > waitMs) end(false);
+    else if (now - started > maxMs) end(spoke);
+  }, 50);
+
+  rec.start(250);
+  return { done, finish: () => end(spoke || Date.now() - started > 600), cancel: () => end(false) };
+}
+
+/** Plain, speakable text from a Markdown reply (email draft cards and pictures are not read aloud). */
 export function speakableText(markdown: string): string {
-  const doc = new DOMParser().parseFromString(renderMarkdown(markdown), 'text/html');
+  const doc = new DOMParser().parseFromString(renderMarkdown(splitDrafts(markdown).text), 'text/html');
   return (doc.body.textContent ?? '').replace(/\s+/g, ' ').trim();
 }
 
-// ---- preferences ----
+// ---------------------------------------------------------------- preferences
 const VOICE_KEY = 'mj.voiceName';
 const SPEAK_KEY = 'mj.speak';
 const LANG_KEY = 'mj.sttLang';
@@ -72,23 +162,37 @@ const write = (k: string, v: string) => {
   }
 };
 
+export const DEFAULT_VOICE = 'edge:en-IN-NeerjaNeural';
 /** Replies are spoken by default; the owner can switch it off in Settings. */
 export const readSpeakPref = () => read(SPEAK_KEY) !== '0';
 export const writeSpeakPref = (on: boolean) => write(SPEAK_KEY, on ? '1' : '0');
-/** A device voice name, or "groq:<name>" for one of the natural voices. */
-export const readVoiceName = () => read(VOICE_KEY) ?? 'groq:hannah';
+/** "edge:<voice>" or "groq:<voice>" (natural voices from the server), or the name of a voice on this phone. */
+export const readVoiceName = () => {
+  const v = read(VOICE_KEY);
+  return v === null || v === 'groq:hannah' ? DEFAULT_VOICE : v; // "groq:hannah" was the old default and needs a one-time approval
+};
 export const writeVoiceName = (name: string) => write(VOICE_KEY, name);
 export type SttLang = 'auto' | 'en' | 'ta';
 export const readSttLang = (): SttLang => (['en', 'ta'].includes(read(LANG_KEY) ?? '') ? (read(LANG_KEY) as SttLang) : 'auto');
 export const writeSttLang = (l: SttLang) => write(LANG_KEY, l);
 
-export const NATURAL_VOICES = [
-  { id: 'groq:hannah', label: 'Hannah (female, warm)' },
-  { id: 'groq:diana', label: 'Diana (female, clear)' },
-  { id: 'groq:autumn', label: 'Autumn (female, soft)' },
-  { id: 'groq:austin', label: 'Austin (male, relaxed)' },
-  { id: 'groq:daniel', label: 'Daniel (male, calm)' },
-  { id: 'groq:troy', label: 'Troy (male, deep)' },
+export const NEURAL_VOICES = [
+  { id: 'edge:en-IN-NeerjaNeural', label: 'Neerja (Indian English, sweet female)' },
+  { id: 'edge:en-IN-PrabhatNeural', label: 'Prabhat (Indian English, warm male)' },
+  { id: 'edge:en-US-AriaNeural', label: 'Aria (US, expressive female)' },
+  { id: 'edge:en-US-JennyNeural', label: 'Jenny (US, friendly female)' },
+  { id: 'edge:en-GB-SoniaNeural', label: 'Sonia (UK, gentle female)' },
+  { id: 'edge:en-US-GuyNeural', label: 'Guy (US, friendly male)' },
+  { id: 'edge:ta-IN-PallaviNeural', label: 'Pallavi (Tamil, female)' },
+  { id: 'edge:ta-IN-ValluvarNeural', label: 'Valluvar (Tamil, male)' },
+];
+export const GROQ_VOICES = [
+  { id: 'groq:hannah', label: 'Hannah (Groq, female)' },
+  { id: 'groq:diana', label: 'Diana (Groq, female)' },
+  { id: 'groq:autumn', label: 'Autumn (Groq, female)' },
+  { id: 'groq:austin', label: 'Austin (Groq, male)' },
+  { id: 'groq:daniel', label: 'Daniel (Groq, male)' },
+  { id: 'groq:troy', label: 'Troy (Groq, male)' },
 ];
 
 /** Voices installed on this phone. They load late on some browsers, so callers should also listen for `voiceschanged`. */
@@ -99,13 +203,14 @@ export function listVoices(): SpeechSynthesisVoice[] {
   return (english.length ? english : all).slice().sort((a, b) => a.name.localeCompare(b.name));
 }
 
-/** Why the natural voice was not used the last time ("" when it worked); shown next to the Test voice button. */
+/** Why the chosen voice was not used the last time ("" when it worked); shown next to the Test voice button. */
 let note = '';
 export const speechNote = () => note;
 
-// ---- playback ----
+// ---------------------------------------------------------------- playback
 let audio: HTMLAudioElement | null = null;
 let run = 0; // bumped on every speak/stop so an old reply can never talk over a new one
+let pending: (() => void) | null = null; // ends the reply that is being spoken, however it ends
 const getAudio = () => (audio ??= new Audio());
 const SILENT = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAESsAACJWAAACABAAZGF0YQAAAAA=';
 
@@ -124,15 +229,46 @@ export function unlockSpeech(): void {
 
 export function stopSpeaking(): void {
   run++;
+  const p = pending;
+  pending = null;
   if (audio) {
     audio.pause();
     audio.removeAttribute('src');
   }
   if ('speechSynthesis' in window) window.speechSynthesis.cancel();
+  p?.();
 }
 
-/** Splits text into sentence-sized pieces (the natural voice takes ~200 characters at a time). */
-function chunks(text: string, max = 170): string[] {
+// loudness of the voice for the animation (real for server voices, a gentle pulse for the phone's own voice)
+let analyser: AnalyserNode | null = null;
+let analyserBuf: Uint8Array<ArrayBuffer> | null = null;
+export function outputLevel(): number {
+  try {
+    if (!analyser && audio && !audio.paused) {
+      const Ctx = window.AudioContext ?? (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+      const ctx = new Ctx();
+      const src = ctx.createMediaElementSource(audio);
+      analyser = ctx.createAnalyser();
+      analyser.fftSize = 512;
+      src.connect(analyser);
+      analyser.connect(ctx.destination);
+      analyserBuf = new Uint8Array(new ArrayBuffer(analyser.fftSize));
+      void ctx.resume();
+    }
+    if (analyser && analyserBuf && audio && !audio.paused) {
+      analyser.getByteTimeDomainData(analyserBuf);
+      let sum = 0;
+      for (const v of analyserBuf) sum += ((v - 128) / 128) ** 2;
+      return Math.min(1, Math.sqrt(sum / analyserBuf.length) * 5);
+    }
+  } catch {
+    /* fall through to the pulse */
+  }
+  return 0.25 + 0.2 * Math.abs(Math.sin(Date.now() / 140));
+}
+
+/** Splits text into sentence-sized pieces so the first words are heard quickly and long replies are never cut off. */
+function chunks(text: string, max: number): string[] {
   const parts = text.match(/[^.!?\n]+[.!?]*\s*/g) ?? [text];
   const out: string[] = [];
   let cur = '';
@@ -149,7 +285,7 @@ function chunks(text: string, max = 170): string[] {
 function pickDeviceVoice(lang: string): SpeechSynthesisVoice | undefined {
   const voices = window.speechSynthesis.getVoices();
   const chosen = readVoiceName();
-  const byName = chosen && !chosen.startsWith('groq:') ? voices.find((v) => v.name === chosen) : undefined;
+  const byName = chosen && !chosen.includes(':') ? voices.find((v) => v.name === chosen) : undefined;
   if (byName && (lang === 'en-IN' || byName.lang.toLowerCase().startsWith(lang.slice(0, 2).toLowerCase()))) return byName;
   const same = voices.filter((v) => v.lang.toLowerCase().replace('_', '-').startsWith(lang.slice(0, 2).toLowerCase()));
   const score = (v: SpeechSynthesisVoice) =>
@@ -172,7 +308,7 @@ function speakOnDevice(pieces: string[], lang: string, onEnd?: () => void): void
   });
 }
 
-/** Plays one WAV through the shared audio element; resolves when it finishes (or throws if playback is blocked). */
+/** Plays one clip through the shared audio element; resolves when it finishes (or throws if playback is blocked). */
 function play(blob: Blob, myRun: number): Promise<void> {
   return new Promise((resolve, reject) => {
     const a = getAudio();
@@ -189,8 +325,8 @@ function play(blob: Blob, myRun: number): Promise<void> {
   });
 }
 
-/** Natural voice, one sentence at a time, fetching the next while the current one plays. Falls back to the phone's voice on any problem. */
-async function speakNatural(pieces: string[], voice: string, s: Settings, myRun: number, lang: string, onEnd?: () => void): Promise<void> {
+/** A human-sounding server voice, one chunk at a time, fetching the next while the current one plays. Falls back to the phone's voice on any problem. */
+async function speakServer(pieces: string[], voice: string, s: Settings, myRun: number, lang: string, onEnd: () => void): Promise<void> {
   let next: Promise<Blob> | undefined = fetchSpeech(s, pieces[0]!, voice);
   next.catch(() => undefined);
   for (let i = 0; i < pieces.length; i++) {
@@ -203,13 +339,20 @@ async function speakNatural(pieces: string[], voice: string, s: Settings, myRun:
       if (run !== myRun) return;
     } catch (e) {
       if (run !== myRun) return;
-      const m = (e as Error).message;
-      note = m === 'tts_terms_required' ? 'Natural voices need a one-time approval in your Groq account (see the setup note). Using your phone voice for now.' : 'The natural voice is not available right now. Using your phone voice.';
+      note =
+        (e as Error).message === 'tts_terms_required'
+          ? 'That voice needs a one-time approval in your Groq account. Using the sweet Indian English voice instead.'
+          : 'The natural voice is not reachable right now. Using your phone voice.';
+      if ((e as Error).message === 'tts_terms_required' && voice.startsWith('groq:')) return void speakServerFallback(pieces.slice(i), s, myRun, lang, onEnd);
       return speakOnDevice(pieces.slice(i), lang, onEnd);
     }
   }
   note = '';
-  if (run === myRun) onEnd?.();
+  if (run === myRun) onEnd();
+}
+
+function speakServerFallback(pieces: string[], s: Settings, myRun: number, lang: string, onEnd: () => void): void {
+  void speakServer(pieces, lang === 'ta-IN' ? 'edge:ta-IN-PallaviNeural' : DEFAULT_VOICE, s, myRun, lang, onEnd);
 }
 
 export function speak(markdown: string, onEnd?: () => void, settings?: Settings): void {
@@ -218,13 +361,25 @@ export function speak(markdown: string, onEnd?: () => void, settings?: Settings)
   const myRun = run;
   const text = speakableText(markdown).slice(0, 4000);
   if (!text) return onEnd?.();
+  let ended = false;
+  const finish = () => {
+    if (ended) return;
+    ended = true;
+    if (pending === finish) pending = null;
+    onEnd?.();
+  };
+  pending = finish;
   const tamil = /[஀-௿]/.test(text);
   const lang = tamil ? 'ta-IN' : 'en-IN';
-  const pieces = chunks(text);
-  const voice = readVoiceName();
-  if (voice.startsWith('groq:') && settings?.token && !tamil) void speakNatural(pieces, voice.slice(5), settings, myRun, lang, onEnd);
-  else speakOnDevice(pieces, lang, onEnd);
+  let voice = readVoiceName();
+  if (tamil && !voice.startsWith('edge:ta')) voice = 'edge:ta-IN-PallaviNeural'; // Tamil replies get a Tamil voice
+  const server = voice.startsWith('edge:') || voice.startsWith('groq:');
+  if (server && settings?.token) void speakServer(chunks(text, voice.startsWith('edge:') ? 420 : 170), voice, settings, myRun, lang, finish);
+  else speakOnDevice(chunks(text, 170), lang, finish);
 }
+
+/** Speaks a reply and resolves when it has finished (or was interrupted). Used by voice mode. */
+export const speakAsync = (markdown: string, settings: Settings): Promise<void> => new Promise((resolve) => speak(markdown, resolve, settings));
 
 /** Replies the app itself produces when something went wrong should be shown, not read aloud. */
 export const isFailureReply = (t: string) => /^(Apologies, Sir\.|Sir, my AI service is busy)/.test(t);

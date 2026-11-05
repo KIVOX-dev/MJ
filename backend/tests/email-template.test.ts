@@ -80,7 +80,7 @@ describe('emailing other people needs confirmation', () => {
   it('a draft sends nothing, and cannot be confirmed in the same turn', async () => {
     const { send, run } = await setup();
     const d = await run('draft_email', draftArgs, 'turn-1');
-    expect(d).toMatchObject({ ok: true, status: 'draft_saved_not_sent', to: 'Friend@Example.com' });
+    expect(d).toMatchObject({ ok: true, status: 'draft_saved_not_sent', to: 'friend@example.com' });
     expect(send).not.toHaveBeenCalled();
     const sameTurn = await run('send_drafted_email', { draft_id: (d as unknown as { draft_id: string }).draft_id }, 'turn-1');
     expect(sameTurn.ok).toBe(false);
@@ -94,9 +94,9 @@ describe('emailing other people needs confirmation', () => {
     expect(sent).toMatchObject({ ok: true, sent_to: 'friend@example.com' });
     const [to, subject, text, , html, opts] = send.mock.calls[0]!;
     expect([to, subject, text]).toEqual(['friend@example.com', 'Hello', 'hi hello']);
-    expect(opts).toEqual({ replyTo: 'owner@example.com' });
+    expect(opts).toEqual({ replyTo: 'owner@example.com', senderName: 'Sir via MJ' });
     expect(html).not.toContain('Good day, Sir');
-    expect(html).toContain('on behalf of its owner');
+    expect(html).toContain('on behalf of Sir');
     // a draft can only be sent once
     expect((await run('send_drafted_email', { draft_id: d.draft_id }, 'turn-3')).ok).toBe(false);
     expect(send).toHaveBeenCalledTimes(1);

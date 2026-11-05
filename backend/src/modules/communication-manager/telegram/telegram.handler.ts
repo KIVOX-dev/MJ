@@ -1,5 +1,6 @@
 import { logger } from '../../../utils/logger';
 import type { AgentContext, Responder } from '../../../core/orchestrator/assistant';
+import type { EmailController } from '../email/email.tools';
 import type { MessageStore } from '../../../core/memory/message.store';
 import { MAX_DOC_BYTES, extractPdfText, extractPlainText } from '../../../utils/pdf';
 import type { TelegramSender } from './telegram.client';
@@ -18,6 +19,8 @@ export interface TelegramHandlerDeps {
   transcribe?: (audio: Buffer, mime: string) => Promise<string>;
   /** Reads a picture MJ generated, so it can be sent to the chat. */
   getImage?: (id: string) => Promise<{ data: Buffer; mime: string } | undefined>;
+  /** Sends or discards an email draft when Sir taps the button under it. */
+  emailDrafts?: EmailController;
 }
 
 /** Handles taps on inline buttons. Only the owner may press them; everything else is ignored. */
@@ -27,6 +30,27 @@ async function processCallback(update: TgUpdate, deps: TelegramHandlerDeps): Pro
     const fromId = String(cb.from.id);
     if (!deps.ownerId || fromId !== deps.ownerId) {
       logger.warn('Ignored Telegram button press from non-owner');
+      return;
+    }
+    const mail = /^mail:(send|drop):([a-f0-9]{8})$/.exec(cb.data ?? '');
+    if (mail && deps.emailDrafts && cb.message) {
+      const chat = cb.message.chat.id;
+      if (mail[1] === 'drop') {
+        deps.emailDrafts.discard(mail[2]!);
+        await deps.sender.answerCallback?.(cb.id, 'Draft discarded');
+        await deps.sender.clearKeyboard?.(chat, cb.message.message_id).catch(() => undefined);
+        await deps.sender.sendText(chat, 'Understood, Sir. I discarded that draft.');
+        return;
+      }
+      try {
+        const r = await deps.emailDrafts.send(mail[2]!);
+        await deps.sender.answerCallback?.(cb.id, 'Sent');
+        await deps.sender.clearKeyboard?.(chat, cb.message.message_id).catch(() => undefined);
+        await deps.sender.sendText(chat, `✅ Sent, Sir. The email went to ${r.sent_to}.`);
+      } catch (err) {
+        await deps.sender.answerCallback?.(cb.id, 'Not sent');
+        await deps.sender.sendText(chat, `Apologies, Sir. ${(err as Error).message}`);
+      }
       return;
     }
     const m = /^stop:([a-f0-9]{24})$/i.exec(cb.data ?? '');
@@ -121,7 +145,23 @@ export async function processTelegramUpdate(update: TgUpdate, deps: TelegramHand
     const fromId = String(msg.from.id);
     // Pictures the assistant generates while answering are sent right after the text reply.
     const generated: string[] = [];
-    const rctx: AgentContext = deps.getImage ? { channel: 'telegram', chatId: fromId, onImage: (pid) => void generated.push(pid) } : { channel: 'telegram', chatId: fromId };
+    const drafted: Array<{ id: string; to: string; subject: string; body: string }> = [];
+    const rctx: AgentContext = {
+      channel: 'telegram',
+      chatId: fromId,
+      ...(deps.getImage ? { onImage: (pid: string) => void generated.push(pid) } : {}),
+      ...(deps.emailDrafts ? { onDraft: (d: { id: string; to: string; subject: string; body: string }) => void drafted.push(d) } : {}),
+    };
+    const sendDrafts = async () => {
+      for (const d of drafted.splice(0)) {
+        await deps.sender.sendText(msg.chat.id, `✉️ Draft email\n\nTo: ${d.to}\nSubject: ${d.subject}\n\n${d.body}`, {
+          buttons: [
+            { text: '✅ Send', data: `mail:send:${d.id}` },
+            { text: '🗑 Discard', data: `mail:drop:${d.id}` },
+          ],
+        });
+      }
+    };
     const sendImages = async () => {
       for (const pid of generated.splice(0)) {
         const img = await deps.getImage?.(pid).catch(() => undefined);
@@ -177,6 +217,7 @@ export async function processTelegramUpdate(update: TgUpdate, deps: TelegramHand
       const reply = await deps.respond(caption, rctx, [{ mime, data: image }]);
       const sent = await deps.sender.sendText(msg.chat.id, reply);
       await sendImages();
+      await sendDrafts();
       await deps.store.saveOutbound(`out-${sent.messageId}`, fromId, reply);
       return;
     }
@@ -205,6 +246,7 @@ export async function processTelegramUpdate(update: TgUpdate, deps: TelegramHand
       const reply = await deps.respond(caption, rctx, undefined, [{ name: docInfo.name, text: body }]);
       const sent = await deps.sender.sendText(msg.chat.id, reply);
       await sendImages();
+      await sendDrafts();
       await deps.store.saveOutbound(`out-${sent.messageId}`, fromId, reply);
       return;
     }
@@ -238,6 +280,7 @@ export async function processTelegramUpdate(update: TgUpdate, deps: TelegramHand
       const reply = await deps.respond(said, rctx);
       const sent = await deps.sender.sendText(msg.chat.id, reply);
       await sendImages();
+      await sendDrafts();
       await deps.store.saveOutbound(`out-${sent.messageId}`, fromId, reply);
       return;
     }
@@ -266,6 +309,7 @@ export async function processTelegramUpdate(update: TgUpdate, deps: TelegramHand
     const reply = await deps.respond(text, rctx);
     const sent = await deps.sender.sendText(msg.chat.id, reply);
       await sendImages();
+      await sendDrafts();
     await deps.store.saveOutbound(`out-${sent.messageId}`, fromId, reply);
   } catch (err) {
     logger.error({ err: { message: (err as Error).message }, id: update.update_id }, 'Failed processing Telegram update');

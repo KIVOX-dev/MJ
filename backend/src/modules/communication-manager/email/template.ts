@@ -47,6 +47,8 @@ export interface EmailTemplateOptions {
   date?: string;
   /** "external": for someone other than Sir. No "Good day, Sir" and a neutral footer. */
   audience?: 'owner' | 'external';
+  /** Whose behalf an external email is sent on. */
+  ownerName?: string;
 }
 
 export function renderEmailHtml(subject: string, body: string, o: EmailTemplateOptions = {}): string {
@@ -100,7 +102,7 @@ export function renderEmailHtml(subject: string, body: string, o: EmailTemplateO
         </tr>
         <tr>
           <td style="padding:16px 28px 26px 28px;">
-            <div style="font-family:${SANS};font-size:13px;line-height:1.5;color:#64748b;">${external ? 'Sent by <strong style="color:#6d28d9;">MJ</strong>, a personal assistant, on behalf of its owner.' : 'Sent by <strong style="color:#6d28d9;">MJ</strong>, your personal intelligence assistant.'}</div>
+            <div style="font-family:${SANS};font-size:13px;line-height:1.5;color:#64748b;">${external ? `Sent by <strong style="color:#6d28d9;">MJ</strong>, a personal assistant, on behalf of ${esc(o.ownerName ?? 'its owner')}.` : 'Sent by <strong style="color:#6d28d9;">MJ</strong>, your personal intelligence assistant.'}</div>
             ${date}
             <div style="font-family:${SERIF};font-style:italic;font-size:13px;line-height:1.5;color:#94a3b8;margin-top:6px;">${external ? 'You can reply directly to this email.' : 'You are receiving this because you asked MJ to email you. Reply to chat with MJ on Telegram.'}</div>
           </td>

@@ -23,10 +23,15 @@ const schema = z.object({
   VAPID_PUBLIC_KEY: z.string().min(40).max(120).optional(),
   VAPID_PRIVATE_KEY: z.string().min(20).max(120).optional(),
   VAPID_SUBJECT: z.string().regex(/^(mailto:.+@.+|https:\/\/.+)$/, 'must be mailto:you@example.com or https://...').optional(),
+  /** The owner's name. Emails are signed with it. */
+  OWNER_NAME: z.string().trim().min(1).max(60).default('Kaviarasan M'),
+  /** One Sarvam key, or several separated by commas (they are used in turn; helpful on the free plan). */
+  SARVAM_API_KEY: z.string().min(10).optional(),
   STT_LANGUAGE: z.string().regex(/^[a-z]{2}$/, 'use a two-letter code such as en or ta').optional(),
   GEMINI_API_KEY: z.string().min(10).optional(),
   HF_TOKEN: z.string().min(10).optional(),
   POLLINATIONS_API_KEY: z.string().min(5).optional(),
+  IMAGE_USE_POLLINATIONS: z.enum(['true', 'false']).default('false'),
   WEB_API_TOKEN: z.string().min(16, 'WEB_API_TOKEN must be at least 16 characters').optional(),
   BREVO_API_KEY: z.string().optional(),
   BREVO_SENDER_EMAIL: z.string().email().optional(),
@@ -44,12 +49,14 @@ const schema = z.object({
   DNS_SERVERS: z.string().optional(),
   MONGODB_URI: z.string().min(1, 'MONGODB_URI is required'),
   GROQ_API_KEYS: z.string().min(1, 'GROQ_API_KEYS is required'),
+  /** Models tried, in order, for drawing pictures as vector graphics. Qwen draws much better than the others. */
+  GROQ_IMAGE_MODELS: z.string().default('qwen/qwen3.8-27b,openai/gpt-oss-120b'),
   GROQ_VISION_MODELS: z.string().default('qwen/qwen3.8-27b'),
   GROQ_MODELS: z.string().default('openai/gpt-oss-120b,qwen/qwen3.8-27b,openai/gpt-oss-20b'),
 });
 
 /** Optional add-ons: a bad value here disables the add-on instead of stopping the server. */
-const OPTIONAL_ADDONS = new Set(['GEMINI_API_KEY', 'HF_TOKEN', 'POLLINATIONS_API_KEY', 'STT_LANGUAGE', 'VAPID_PUBLIC_KEY', 'VAPID_PRIVATE_KEY', 'VAPID_SUBJECT', 'WEB_API_TOKEN', 'BREVO_API_KEY', 'BREVO_SENDER_EMAIL', 'BREVO_SENDER_NAME', 'OWNER_EMAIL', 'CRAWLIT_URL', 'CRAWLIT_TOKEN']);
+const OPTIONAL_ADDONS = new Set(['SARVAM_API_KEY', 'GEMINI_API_KEY', 'HF_TOKEN', 'POLLINATIONS_API_KEY', 'STT_LANGUAGE', 'VAPID_PUBLIC_KEY', 'VAPID_PRIVATE_KEY', 'VAPID_SUBJECT', 'WEB_API_TOKEN', 'BREVO_API_KEY', 'BREVO_SENDER_EMAIL', 'BREVO_SENDER_NAME', 'OWNER_EMAIL', 'CRAWLIT_URL', 'CRAWLIT_TOKEN']);
 
 const list = (s: string) => s.split(',').map((x) => x.trim()).filter(Boolean);
 
@@ -117,9 +124,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
     crawlitUrl,
     crawlitToken: e.CRAWLIT_TOKEN,
     /** Default language hint for voice transcription (en, ta...). Unset = automatic. */
+    /** Sarvam AI (Indian-language speech): human voices and accurate transcription. */
+    sarvamKeys: e.SARVAM_API_KEY ? list(e.SARVAM_API_KEY) : [],
     sttLanguage: e.STT_LANGUAGE,
+    ownerName: e.OWNER_NAME,
     /** Picture generation engines, best first. Pollinations needs no key. */
-    images: { geminiKey: e.GEMINI_API_KEY, hfToken: e.HF_TOKEN, pollinationsKey: e.POLLINATIONS_API_KEY },
+    images: { geminiKey: e.GEMINI_API_KEY, hfToken: e.HF_TOKEN, pollinationsKey: e.POLLINATIONS_API_KEY, pollinations: e.IMAGE_USE_POLLINATIONS === 'true' || !!e.POLLINATIONS_API_KEY },
     webApiToken: e.WEB_API_TOKEN,
     // Web Push (free, no third-party service). Needs all three; the subject falls back to mailto:OWNER_EMAIL.
     push: {
@@ -141,6 +151,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
     corsOrigins: list(e.CORS_ORIGINS),
     dnsServers: e.DNS_SERVERS ? list(e.DNS_SERVERS) : [],
     mongoUri: e.MONGODB_URI,
-    groq: { apiKeys: list(e.GROQ_API_KEYS), models: list(e.GROQ_MODELS), visionModels: list(e.GROQ_VISION_MODELS) },
+    groq: { apiKeys: list(e.GROQ_API_KEYS), models: list(e.GROQ_MODELS), visionModels: list(e.GROQ_VISION_MODELS), imageModels: list(e.GROQ_IMAGE_MODELS) },
   };
 }
