@@ -13,6 +13,12 @@ describe('GroqTranscriber', () => {
     expect((form.get('file') as File).name).toBe('voice.m4a');
   });
 
+  it('names video recordings .mp4 so the sound is read from them', async () => {
+    const f = vi.fn().mockResolvedValue(ok('hi'));
+    await new GroqTranscriber(['k1'], 'm', f as unknown as typeof fetch).transcribe(Buffer.alloc(300), 'video/mp4');
+    expect(((f.mock.calls[0]![1].body as FormData).get('file') as File).name).toBe('voice.mp4');
+  });
+
   it('falls back to the next key when one is rate limited', async () => {
     const f = vi.fn().mockResolvedValueOnce(fail(429)).mockResolvedValueOnce(ok('done'));
     const t = new GroqTranscriber(['k1', 'k2'], 'm', f as unknown as typeof fetch);

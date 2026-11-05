@@ -16,11 +16,15 @@ export interface MessageStore {
 }
 
 export class MongoMessageStore implements MessageStore {
-  constructor(private readonly channel: Channel) {}
+  /** `sessionId` selects a separate web chat; without it this is the shared per-channel conversation. */
+  constructor(
+    private readonly channel: Channel,
+    private readonly sessionId?: string,
+  ) {}
 
   async claimInbound(externalId: string, from: string, text: string, type: string): Promise<boolean> {
     try {
-      await MessageModel.create({ channel: this.channel, externalId, from, direction: 'in', text, type });
+      await MessageModel.create({ channel: this.channel, externalId, from, direction: 'in', text, type, sessionId: this.sessionId });
       return true;
     } catch (err) {
       // Only a collision on (channel, externalId) means "duplicate delivery". Any other
@@ -33,14 +37,14 @@ export class MongoMessageStore implements MessageStore {
 
   async saveOutbound(externalId: string, to: string, text: string): Promise<void> {
     try {
-      await MessageModel.create({ channel: this.channel, externalId, from: to, direction: 'out', text });
+      await MessageModel.create({ channel: this.channel, externalId, from: to, direction: 'out', text, sessionId: this.sessionId });
     } catch (err) {
       logger.error({ err: { message: (err as Error).message } }, 'Failed to store outbound message');
     }
   }
 
   async recent(limit: number): Promise<StoredMessage[]> {
-    const docs = await MessageModel.find({ channel: this.channel, type: 'text' }).sort({ createdAt: -1 }).limit(limit).lean();
+    const docs = await MessageModel.find({ channel: this.channel, type: 'text', sessionId: this.sessionId ?? null }).sort({ createdAt: -1 }).limit(limit).lean();
     return docs.reverse().map((d) => ({ direction: d.direction as 'in' | 'out', text: d.text ?? '' }));
   }
 }

@@ -7,7 +7,7 @@ export class GroqTranscriber {
   ) {}
 
   async transcribe(audio: Buffer, mime: string): Promise<string> {
-    const ext = /mp4|m4a|aac/i.test(mime) ? 'm4a' : /ogg/i.test(mime) ? 'ogg' : /wav/i.test(mime) ? 'wav' : /mpeg|mp3/i.test(mime) ? 'mp3' : 'webm';
+    const ext = /video\/mp4/i.test(mime) ? 'mp4' : /mp4|m4a|aac/i.test(mime) ? 'm4a' : /ogg/i.test(mime) ? 'ogg' : /wav/i.test(mime) ? 'wav' : /mpeg|mp3/i.test(mime) ? 'mp3' : 'webm';
     let lastErr = 'no API key';
     for (const key of this.apiKeys) {
       const form = new FormData();

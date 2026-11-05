@@ -20,6 +20,9 @@ const schema = z.object({
   JOBS_SECRET: z.string().optional(),
   CRAWLIT_URL: z.string().url().optional(),
   CRAWLIT_TOKEN: z.string().min(16, 'CRAWLIT_TOKEN must be at least 16 characters').optional(),
+  VAPID_PUBLIC_KEY: z.string().min(40).max(120).optional(),
+  VAPID_PRIVATE_KEY: z.string().min(20).max(120).optional(),
+  VAPID_SUBJECT: z.string().regex(/^(mailto:.+@.+|https:\/\/.+)$/, 'must be mailto:you@example.com or https://...').optional(),
   WEB_API_TOKEN: z.string().min(16, 'WEB_API_TOKEN must be at least 16 characters').optional(),
   BREVO_API_KEY: z.string().optional(),
   BREVO_SENDER_EMAIL: z.string().email().optional(),
@@ -42,7 +45,7 @@ const schema = z.object({
 });
 
 /** Optional add-ons: a bad value here disables the add-on instead of stopping the server. */
-const OPTIONAL_ADDONS = new Set(['WEB_API_TOKEN', 'BREVO_API_KEY', 'BREVO_SENDER_EMAIL', 'BREVO_SENDER_NAME', 'OWNER_EMAIL', 'CRAWLIT_URL', 'CRAWLIT_TOKEN']);
+const OPTIONAL_ADDONS = new Set(['VAPID_PUBLIC_KEY', 'VAPID_PRIVATE_KEY', 'VAPID_SUBJECT', 'WEB_API_TOKEN', 'BREVO_API_KEY', 'BREVO_SENDER_EMAIL', 'BREVO_SENDER_NAME', 'OWNER_EMAIL', 'CRAWLIT_URL', 'CRAWLIT_TOKEN']);
 
 const list = (s: string) => s.split(',').map((x) => x.trim()).filter(Boolean);
 
@@ -110,6 +113,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
     crawlitUrl,
     crawlitToken: e.CRAWLIT_TOKEN,
     webApiToken: e.WEB_API_TOKEN,
+    // Web Push (free, no third-party service). Needs all three; the subject falls back to mailto:OWNER_EMAIL.
+    push: {
+      publicKey: e.VAPID_PUBLIC_KEY,
+      privateKey: e.VAPID_PRIVATE_KEY,
+      subject: e.VAPID_SUBJECT ?? (e.OWNER_EMAIL ? `mailto:${e.OWNER_EMAIL}` : undefined),
+    },
     email: { brevoApiKey: e.BREVO_API_KEY, senderEmail: e.BREVO_SENDER_EMAIL, senderName: e.BREVO_SENDER_NAME, ownerEmail: e.OWNER_EMAIL },
     news: {
       apiKey: e.NEWSDATA_API_KEY,

@@ -37,6 +37,8 @@ import { BrevoClient } from './modules/communication-manager/email/brevo.client'
 import { registerEmailTools } from './modules/communication-manager/email/email.tools';
 import { GroqTranscriber } from './core/ai-engine/transcribe';
 import { webChatRouter } from './routes/web.routes';
+import { MongoPushRepo, PushService, makeWebPushSender } from './modules/communication-manager/push/push.service';
+import { MongoSessionRepo } from './core/memory/session.repo';
 import { logger } from './utils/logger';
 
 async function main() {
@@ -80,10 +82,10 @@ async function main() {
       : '') +
     'If the user asks when or whether they will get breaking news or the daily news, explain this directly and do NOT ask them for a region or topic. ' +
     'Use the get_news tool only when the user asks for news right now on a specific topic.';
-  const makeAgent = (channel: Channel) =>
+  const makeAgent = (channel: Channel, sessionId?: string) =>
     new Agent({
       ai: groq,
-      store: new MongoMessageStore(channel),
+      store: new MongoMessageStore(channel, sessionId),
       registry,
       timezone: config.timezone,
       extraInstructions: automationNotes,
@@ -150,9 +152,33 @@ Reply "stop reminders" to stop these.` : text);
     logger.warn('Telegram disabled: TELEGRAM_BOT_TOKEN / TELEGRAM_WEBHOOK_SECRET not set');
   }
 
+  // Web Push: reminders, breaking news and the morning briefing also arrive as phone notifications,
+  // even when the web app is closed. History and preferences live in MongoDB.
+  const vapid = config.push;
+  const push = new PushService(
+    new MongoPushRepo(),
+    vapid.publicKey && vapid.privateKey && vapid.subject ? makeWebPushSender({ subject: vapid.subject, publicKey: vapid.publicKey, privateKey: vapid.privateKey }) : undefined,
+    vapid.publicKey && vapid.privateKey && vapid.subject ? vapid.publicKey : undefined,
+  );
+  if (!push.enabled) logger.warn('Web Push is off: set VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY and VAPID_SUBJECT (or OWNER_EMAIL) to enable phone notifications');
+
   // Mobile web app: same assistant as the Telegram bot (shared history, memory and reminders).
   if (config.webApiToken && tg.ownerId) {
-    extraRouters.push(webChatRouter({ token: config.webApiToken, respond: makeAgent('telegram'), store: new MongoMessageStore('telegram'), ownerChatId: tg.ownerId, transcribe: (a, m) => stt.transcribe(a, m) }));
+    const ownerId = tg.ownerId;
+    extraRouters.push(
+      webChatRouter({
+        token: config.webApiToken,
+        respond: makeAgent('telegram'),
+        store: new MongoMessageStore('telegram'),
+        ownerChatId: ownerId,
+        transcribe: (a, m) => stt.transcribe(a, m),
+        sessions: new MongoSessionRepo(),
+        storeFor: (sid) => new MongoMessageStore('telegram', sid),
+        respondFor: (sid) => makeAgent('telegram', sid),
+        push,
+        stopReminder: (id) => reminders.cancel('telegram', ownerId, id),
+      }),
+    );
     logger.info('Web chat API enabled at /api/chat');
   } else if (config.webApiToken) {
     logger.warn('WEB_API_TOKEN is set but TELEGRAM_OWNER_ID is missing: web chat disabled');
@@ -164,6 +190,15 @@ Reply "stop reminders" to stop these.` : text);
       const send = senders[channel];
       if (!send) throw new Error(`Channel ${channel} is not configured`);
       await send(chatId, text, opts);
+      // Same reminder as a phone notification (works with the web app closed). Repeats share one tag so they replace each other.
+      void push.send({
+        title: 'Reminder',
+        body: text.replace(/^⏰ Reminder, Sir:\s*/, '').split('\n\n')[0] ?? text,
+        category: 'reminder',
+        url: '/',
+        reminderId: opts?.stopButtonFor,
+        tag: opts?.stopButtonFor ? `reminder-${opts.stopButtonFor}` : undefined,
+      });
     });
 
   // Daily news digest (prepared from 05:00, sent 08:00 Asia/Kolkata) and Tamil Nadu breaking-news alerts,
@@ -176,6 +211,13 @@ Reply "stop reminders" to stop these.` : text);
     .map((channel) => ({ channel, chatId: owners[channel]! }));
   const notify = async (channel: Channel, chatId: string, text: string) => {
     await senders[channel]!(chatId, text);
+    // Breaking-news alerts and the first part of the morning briefing also go out as phone notifications.
+    if (text.startsWith('🚨')) {
+      const headline = text.split('\n\n')[1] ?? text;
+      void push.send({ title: 'Tamil Nadu alert', body: headline, category: 'alert', url: '/', tag: undefined });
+    } else if (text.startsWith('📰')) {
+      void push.send({ title: 'Your morning news briefing', body: 'Good morning, Sir. Today\'s headlines are ready in Telegram.', category: 'news', url: '/', tag: 'daily-news' });
+    }
   };
   if (!recipients.length) {
     logger.warn('News digest/alerts have no usable recipient (channel not configured or owner id missing)');
@@ -257,6 +299,7 @@ Reply "stop reminders" to stop these.` : text);
       crawlit: !!crawlit,
       newsDigest: !!digest,
       newsAlerts: !!alerts,
+      push: push.enabled,
     }),
   });
   const server = app.listen(config.port, () => {

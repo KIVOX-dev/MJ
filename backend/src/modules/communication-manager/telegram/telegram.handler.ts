@@ -66,6 +66,10 @@ export interface TgUpdate {
     voice?: { file_id: string; duration?: number; mime_type?: string; file_size?: number };
     /** An audio file sent as music/audio. */
     audio?: { file_id: string; duration?: number; mime_type?: string; file_size?: number };
+    /** A round "video message". Its sound is transcribed like a voice note. */
+    video_note?: { file_id: string; duration?: number; file_size?: number };
+    /** A normal video. Its sound is transcribed like a voice note. */
+    video?: { file_id: string; duration?: number; mime_type?: string; file_size?: number };
   };
 }
 
@@ -84,9 +88,11 @@ const MAX_VOICE_SECONDS = 300;
 
 /** Voice note or audio file the user sent. */
 function pickVoice(msg: NonNullable<TgUpdate['message']>): { fileId: string; mime: string; seconds: number; tooBig: boolean } | undefined {
-  const v = msg.voice ?? msg.audio;
+  const v = msg.voice ?? msg.audio ?? msg.video_note ?? msg.video;
   if (!v) return undefined;
-  return { fileId: v.file_id, mime: v.mime_type ?? 'audio/ogg', seconds: v.duration ?? 0, tooBig: (v.file_size ?? 0) > MAX_VOICE_BYTES };
+  const isVideo = !!(msg.video_note ?? msg.video) && !msg.voice && !msg.audio;
+  const mime = (v as { mime_type?: string }).mime_type || (isVideo ? 'video/mp4' : 'audio/ogg');
+  return { fileId: v.file_id, mime, seconds: v.duration ?? 0, tooBig: (v.file_size ?? 0) > MAX_VOICE_BYTES };
 }
 
 const MAX_PHOTO_BYTES = 3_000_000; // keeps the base64 request well under the model's 4 MB limit
@@ -193,11 +199,11 @@ export async function processTelegramUpdate(update: TgUpdate, deps: TelegramHand
     // Voice notes: download, transcribe, show what was heard, then answer exactly as if it had been typed.
     if (voiceInfo) {
       if (!deps.transcribe || !deps.sender.downloadFile) {
-        await deps.sender.sendText(msg.chat.id, 'Sir, voice notes are not switched on yet. Please type your message for now.');
+        await deps.sender.sendText(msg.chat.id, 'Sir, voice and video notes are not switched on yet. Please type your message for now.');
         return;
       }
       if (voiceInfo.tooBig || voiceInfo.seconds > MAX_VOICE_SECONDS) {
-        await deps.sender.sendText(msg.chat.id, 'Sir, that voice note is too long. Please keep it under 5 minutes.');
+        await deps.sender.sendText(msg.chat.id, 'Sir, that recording is too long. Please keep it under 5 minutes.');
         return;
       }
       let said: string;
@@ -206,11 +212,11 @@ export async function processTelegramUpdate(update: TgUpdate, deps: TelegramHand
         said = (await deps.transcribe(audio, voiceInfo.mime)).trim();
       } catch (err) {
         logger.warn({ err: { message: (err as Error).message } }, 'Telegram voice note could not be transcribed');
-        await deps.sender.sendText(msg.chat.id, 'Apologies, Sir. I could not understand that voice note. Please try again or type it.');
+        await deps.sender.sendText(msg.chat.id, 'Apologies, Sir. I could not understand that recording. Please try again or type it.');
         return;
       }
       if (!said) {
-        await deps.sender.sendText(msg.chat.id, 'Sir, I could not hear any words in that voice note.');
+        await deps.sender.sendText(msg.chat.id, 'Sir, I could not hear any words in that recording.');
         return;
       }
       await deps.sender.sendText(msg.chat.id, `🎤 ${said}`);
@@ -223,7 +229,7 @@ export async function processTelegramUpdate(update: TgUpdate, deps: TelegramHand
     }
 
     if (!text) {
-      await deps.sender.sendText(msg.chat.id, 'Sir, I can read text, photos, PDFs and text files, and I can listen to voice notes.');
+      await deps.sender.sendText(msg.chat.id, 'Sir, I can read text, photos, PDFs and text files, and I can listen to voice notes and video notes.');
       return;
     }
     if (text === '/start') {

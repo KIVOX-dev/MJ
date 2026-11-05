@@ -1,121 +1,245 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowUp, Mic, RotateCcw, Settings as Cog, Sparkles, Square, Volume2, VolumeX, X } from 'lucide-react';
-import { loadHistory, loadSettings, saveSettings, sendChat, transcribeAudio, type ChatMessage, type Settings } from './api';
-import { canRecord, canSpeak, speak, startRecording, stopSpeaking, unlockSpeech, type Recording } from './voice';
+import { ArrowUp, Bell, Check, Copy, Menu, MessageSquare, Mic, Pencil, RotateCcw, Settings as Cog, SquarePen, Square, Trash2, Volume2, VolumeX, X } from 'lucide-react';
+import {
+  createSession,
+  deleteSession,
+  getPushStatus,
+  listSessions,
+  loadHistory,
+  loadSettings,
+  renameSession,
+  saveSettings,
+  sendChat,
+  transcribeAudio,
+  type Msg,
+  type Session,
+  type Settings,
+} from './api';
 import { renderMarkdown } from './markdown';
+import { NotificationsPanel, SettingsPanel } from './panels';
+import { refreshSubscription, registerServiceWorker, writeSwConfig } from './push';
+import { canRecord, canSpeak, readSpeakPref, speak, startRecording, stopSpeaking, unlockSpeech, writeSpeakPref, type Recording } from './voice';
 
-const CHIPS = ["What's the latest news?", 'Remind me in 10 minutes to stretch', 'What do you remember about me?', 'Summarise my day'];
+const SUGGESTIONS = ["What's the latest news?", 'Remind me in 10 minutes to stretch', 'What do you remember about me?', 'Email me a summary of today'];
+const MAX_SECONDS = 120;
+const MAIN: Session = { id: 'main', title: 'Telegram chat', updatedAt: '' };
 let counter = 0;
 const uid = () => `m${Date.now()}-${counter++}`;
 const clock = (t: number) => new Date(t).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+const mmss = (s: number) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+const store = {
+  get: (k: string) => {
+    try {
+      return localStorage.getItem(k);
+    } catch {
+      return null;
+    }
+  },
+  set: (k: string, v: string) => {
+    try {
+      localStorage.setItem(k, v);
+    } catch {
+      /* ignore */
+    }
+  },
+};
 
 type Status = 'idle' | 'online' | 'offline';
-const MAX_SECONDS = 120;
-const mmss = (s: number) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
-const readSpeakPref = () => {
-  try {
-    return localStorage.getItem('mj.speak') === '1';
-  } catch {
-    return false;
-  }
-};
+type Panel = null | 'notifications' | 'settings';
 
 export function App() {
   const [settings, setSettings] = useState<Settings>(loadSettings);
-  const [showSettings, setShowSettings] = useState(() => !loadSettings().token);
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [panel, setPanel] = useState<Panel>(() => (loadSettings().token ? null : 'settings'));
+  const [drawer, setDrawer] = useState(false);
+  const [sessions, setSessions] = useState<Session[]>([]);
+  const [activeId, setActiveId] = useState<string>(() => store.get('mj.active') || 'main');
+  const [chats, setChats] = useState<Record<string, Msg[]>>({});
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<Status>('idle');
+  const [unread, setUnread] = useState(0);
   const [speakAll, setSpeakAll] = useState(readSpeakPref);
   const [speakingId, setSpeakingId] = useState<string | null>(null);
+  const [copied, setCopied] = useState('');
   const [recording, setRecording] = useState(false);
   const [seconds, setSeconds] = useState(0);
   const [transcribing, setTranscribing] = useState(false);
   const recRef = useRef<Recording | null>(null);
   const endRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const loadedRef = useRef<Set<string>>(new Set());
 
-  // Load the earlier conversation (shared with the Telegram bot) once a token exists.
+  const messages = chats[activeId] ?? [];
+  const active = activeId === 'main' ? MAIN : (sessions.find((s) => s.id === activeId) ?? { id: activeId, title: 'New chat', updatedAt: '' });
+  const put = useCallback((id: string, fn: (m: Msg[]) => Msg[]) => setChats((c) => ({ ...c, [id]: fn(c[id] ?? []) })), []);
+  const fail = useCallback((id: string, msg: string) => put(id, (m) => [...m, { id: uid(), role: 'error', text: msg, at: Date.now() }]), [put]);
+
+  // ---- loading ----
+  const loadChat = useCallback(
+    async (id: string, s: Settings) => {
+      if (!s.token || loadedRef.current.has(id)) return;
+      loadedRef.current.add(id);
+      try {
+        const rows = await loadHistory(s, id);
+        setStatus('online');
+        setChats((c) => ({ ...c, [id]: rows.map((r, i) => ({ id: `h${id}-${i}`, role: r.role, text: r.text, at: Date.now() - (rows.length - i) * 1000 })) }));
+      } catch (e) {
+        loadedRef.current.delete(id);
+        setStatus('offline');
+        if (id === 'main' || (e as Error).message.includes('token')) fail(id, (e as Error).message);
+        else {
+          // a chat that no longer exists on the server: fall back to the main chat
+          setActiveId('main');
+          store.set('mj.active', 'main');
+        }
+      }
+    },
+    [fail],
+  );
+
   useEffect(() => {
     if (!settings.token) return;
-    let live = true;
-    loadHistory(settings)
-      .then((rows) => {
-        if (!live) return;
-        setStatus('online');
-        setMessages(rows.map((r, i) => ({ id: `h${i}`, role: r.role, text: r.text, at: Date.now() - (rows.length - i) * 1000 })));
-      })
-      .catch((e: Error) => {
-        if (!live) return;
-        setStatus('offline');
-        setMessages([{ id: uid(), role: 'error', text: e.message, at: Date.now() }]);
-      });
+    void registerServiceWorker();
+    void writeSwConfig(settings);
+    void listSessions(settings).then(setSessions);
+    void getPushStatus(settings).then((s) => setUnread(s.unread)).catch(() => undefined);
+    void refreshSubscription(settings);
+  }, [settings]);
+
+  useEffect(() => {
+    void loadChat(activeId, settings);
+  }, [activeId, settings, loadChat]);
+
+  // unread badge: refresh now and then, and when the app comes back to the front
+  useEffect(() => {
+    if (!settings.token) return;
+    const tick = () => void getPushStatus(settings).then((s) => setUnread(s.unread)).catch(() => undefined);
+    const t = setInterval(tick, 60_000);
+    document.addEventListener('visibilitychange', tick);
+    const onMsg = (e: MessageEvent) => {
+      if ((e.data as { type?: string })?.type === 'notification-click') {
+        setPanel('notifications');
+        tick();
+      }
+    };
+    navigator.serviceWorker?.addEventListener('message', onMsg);
     return () => {
-      live = false;
+      clearInterval(t);
+      document.removeEventListener('visibilitychange', tick);
+      navigator.serviceWorker?.removeEventListener('message', onMsg);
     };
   }, [settings]);
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
-  }, [messages, busy]);
+  }, [messages, busy, activeId]);
 
   useEffect(() => {
     const el = inputRef.current;
     if (!el) return;
     el.style.height = 'auto';
-    el.style.height = `${Math.min(el.scrollHeight, 132)}px`;
+    el.style.height = `${Math.min(el.scrollHeight, 140)}px`;
   }, [text]);
 
+  // ---- chats ----
+  const select = (id: string) => {
+    stopSpeaking();
+    setSpeakingId(null);
+    setActiveId(id);
+    store.set('mj.active', id);
+    setDrawer(false);
+  };
+
+  const newChat = async () => {
+    // reuse an empty chat instead of piling up blank ones
+    const blank = sessions.find((s) => (chats[s.id] ?? []).length === 0 && loadedRef.current.has(s.id));
+    if (blank) return select(blank.id);
+    try {
+      const s = await createSession(settings);
+      loadedRef.current.add(s.id);
+      setChats((c) => ({ ...c, [s.id]: [] }));
+      setSessions((x) => [s, ...x]);
+      select(s.id);
+    } catch (e) {
+      fail(activeId, (e as Error).message);
+      setDrawer(false);
+    }
+  };
+
+  const removeChat = async (s: Session) => {
+    if (!window.confirm(`Delete "${s.title}"? Reminders you set in it will keep working.`)) return;
+    try {
+      await deleteSession(settings, s.id);
+      setSessions((x) => x.filter((y) => y.id !== s.id));
+      if (activeId === s.id) select('main');
+    } catch (e) {
+      fail(activeId, (e as Error).message);
+    }
+  };
+
+  const renameChat = async (s: Session) => {
+    const title = window.prompt('Rename chat', s.title)?.trim();
+    if (!title) return;
+    setSessions((x) => x.map((y) => (y.id === s.id ? { ...y, title } : y)));
+    try {
+      await renameSession(settings, s.id, title);
+    } catch (e) {
+      fail(activeId, (e as Error).message);
+    }
+  };
+
+  // ---- sending ----
   const send = useCallback(
-    async (raw: string, viaVoice = false) => {
+    async (raw: string) => {
       const q = raw.trim();
       if (!q || busy) return;
-      if (!settings.token) return setShowSettings(true);
+      if (!settings.token) return setPanel('settings');
+      const sid = activeId;
+      unlockSpeech(); // runs inside the tap so spoken replies are allowed later
+      stopSpeaking();
+      setSpeakingId(null);
       setText('');
       setBusy(true);
-      setMessages((m) => [...m.filter((x) => x.role !== 'error'), { id: uid(), role: 'user', text: q, at: Date.now() }]);
+      put(sid, (m) => [...m.filter((x) => x.role !== 'error'), { id: uid(), role: 'user', text: q, at: Date.now() }]);
       try {
-        const reply = await sendChat(settings, q);
+        const reply = await sendChat(settings, q, sid);
         setStatus('online');
         const id = uid();
-        setMessages((m) => [...m, { id, role: 'assistant', text: reply, at: Date.now() }]);
-        if (canSpeak() && (viaVoice || speakAll)) {
+        put(sid, (m) => [...m, { id, role: 'assistant', text: reply, at: Date.now() }]);
+        if (canSpeak() && speakAll) {
           setSpeakingId(id);
           speak(reply, () => setSpeakingId((cur) => (cur === id ? null : cur)));
         }
+        if (sid !== 'main') void listSessions(settings).then(setSessions);
       } catch (e) {
         setStatus('offline');
-        setMessages((m) => [...m, { id: uid(), role: 'error', text: (e as Error).message, at: Date.now() }]);
+        fail(sid, (e as Error).message);
       } finally {
         setBusy(false);
       }
     },
-    [busy, settings, speakAll],
+    [activeId, busy, fail, put, settings, speakAll],
   );
 
-  const fail = useCallback((msg: string) => setMessages((m) => [...m, { id: uid(), role: 'error', text: msg, at: Date.now() }]), []);
-
+  // ---- voice input ----
   const beginRecording = async () => {
-    if (!settings.token) return setShowSettings(true);
+    if (!settings.token) return setPanel('settings');
     stopSpeaking();
     setSpeakingId(null);
-    unlockSpeech(); // runs inside the tap so spoken replies are allowed later (iOS)
+    unlockSpeech();
     try {
       recRef.current = await startRecording();
       setSeconds(0);
       setRecording(true);
     } catch (e) {
-      fail((e as Error).message);
+      fail(activeId, (e as Error).message);
     }
   };
-
   const cancelRecording = () => {
     recRef.current?.cancel();
     recRef.current = null;
     setRecording(false);
   };
-
   const finishRecording = useCallback(async () => {
     const rec = recRef.current;
     if (!rec) return;
@@ -127,24 +251,22 @@ export function App() {
       if (audio.size < 800) throw new Error('That was too short. Tap the mic and speak a little longer.');
       const said = await transcribeAudio(settings, audio);
       if (!said) throw new Error('I could not hear anything. Please try again.');
-      await send(said, true);
+      await send(said);
     } catch (e) {
-      fail((e as Error).message);
+      fail(activeId, (e as Error).message);
     } finally {
       setTranscribing(false);
     }
-  }, [settings, send, fail]);
+  }, [activeId, fail, send, settings]);
 
   useEffect(() => {
     if (!recording) return;
     const t = setInterval(() => setSeconds((x) => x + 1), 1000);
     return () => clearInterval(t);
   }, [recording]);
-
   useEffect(() => {
     if (recording && seconds >= MAX_SECONDS) void finishRecording();
   }, [recording, seconds, finishRecording]);
-
   useEffect(
     () => () => {
       recRef.current?.cancel();
@@ -153,22 +275,17 @@ export function App() {
     [],
   );
 
-  const toggleSpeakAll = () => {
-    const next = !speakAll;
-    setSpeakAll(next);
-    try {
-      localStorage.setItem('mj.speak', next ? '1' : '0');
-    } catch {
-      /* ignore */
-    }
-    if (next) unlockSpeech();
+  // ---- voice output / actions ----
+  const toggleSpeakAll = (on = !speakAll) => {
+    setSpeakAll(on);
+    writeSpeakPref(on);
+    if (on) unlockSpeech();
     else {
       stopSpeaking();
       setSpeakingId(null);
     }
   };
-
-  const toggleSpeakMessage = (m: ChatMessage) => {
+  const toggleSpeakMessage = (m: Msg) => {
     if (speakingId === m.id) {
       stopSpeaking();
       setSpeakingId(null);
@@ -177,6 +294,15 @@ export function App() {
     setSpeakingId(m.id);
     speak(m.text, () => setSpeakingId((cur) => (cur === m.id ? null : cur)));
   };
+  const copy = async (m: Msg) => {
+    try {
+      await navigator.clipboard.writeText(m.text);
+      setCopied(m.id);
+      setTimeout(() => setCopied((c) => (c === m.id ? '' : c)), 1500);
+    } catch {
+      /* clipboard blocked */
+    }
+  };
 
   const lastUser = useMemo(() => [...messages].reverse().find((m) => m.role === 'user')?.text, [messages]);
   const empty = messages.length === 0 && !busy;
@@ -184,39 +310,38 @@ export function App() {
   return (
     <div className="app">
       <header className="top">
-        <img className="logo" src="/icon.svg" alt="" width={40} height={40} />
+        <button className="icon-btn" aria-label="Open chats" onClick={() => setDrawer(true)}>
+          <Menu size={22} />
+        </button>
         <div className="title">
-          <h1>MJ</h1>
+          <h1>{active.title}</h1>
           <span className={`pill ${status}`}>
             <i />
             {status === 'online' ? 'Online' : status === 'offline' ? 'Offline' : 'Connecting'}
           </span>
         </div>
         {canSpeak() && (
-          <button
-            className={`icon-btn ${speakAll ? 'on' : ''}`}
-            aria-label={speakAll ? 'Turn off spoken replies' : 'Speak every reply'}
-            aria-pressed={speakAll}
-            onClick={toggleSpeakAll}
-          >
-            {speakAll ? <Volume2 size={20} /> : <VolumeX size={20} />}
+          <button className={`icon-btn ${speakAll ? 'on' : ''}`} aria-label={speakAll ? 'Turn off spoken replies' : 'Speak every reply'} aria-pressed={speakAll} onClick={() => toggleSpeakAll()}>
+            {speakAll ? <Volume2 size={21} /> : <VolumeX size={21} />}
           </button>
         )}
-        <button className="icon-btn" aria-label="Settings" onClick={() => setShowSettings(true)}>
-          <Cog size={20} />
+        <button className="icon-btn bell" aria-label={`Notifications${unread ? `, ${unread} unread` : ''}`} onClick={() => setPanel('notifications')}>
+          <Bell size={21} />
+          {unread > 0 && <b className="badge">{unread > 9 ? '9+' : unread}</b>}
+        </button>
+        <button className="icon-btn" aria-label="New chat" onClick={() => void newChat()}>
+          <SquarePen size={21} />
         </button>
       </header>
 
       <main className="stream" aria-live="polite">
         {empty && (
           <section className="hello">
-            <div className="spark">
-              <Sparkles size={22} />
-            </div>
-            <h2>Good day, Sir.</h2>
-            <p>Ask anything, set reminders, or get the news. This chat is the same MJ as on Telegram.</p>
+            <img src="/logo.png" alt="" width={64} height={64} />
+            <h2>How can I help, Sir?</h2>
+            <p>Ask anything, set reminders, get the news or have me email you. I will speak every reply.</p>
             <div className="chips">
-              {CHIPS.map((c) => (
+              {SUGGESTIONS.map((c) => (
                 <button key={c} className="chip" onClick={() => void send(c)}>
                   {c}
                 </button>
@@ -228,24 +353,25 @@ export function App() {
         {messages.map((m) =>
           m.role === 'assistant' ? (
             <div key={m.id} className="row ai">
-              <div className="bubble ai" dangerouslySetInnerHTML={{ __html: renderMarkdown(m.text) }} />
-              <div className="meta">
-                <time>{clock(m.at)}</time>
-                {canSpeak() && (
-                  <button
-                    className={`speak ${speakingId === m.id ? 'on' : ''}`}
-                    aria-label={speakingId === m.id ? 'Stop speaking' : 'Read aloud'}
-                    onClick={() => toggleSpeakMessage(m)}
-                  >
-                    {speakingId === m.id ? <Square size={13} /> : <Volume2 size={15} />}
+              <img className="avatar" src="/logo.png" alt="" width={28} height={28} />
+              <div className="ai-body">
+                <div className="md" dangerouslySetInnerHTML={{ __html: renderMarkdown(m.text) }} />
+                <div className="meta">
+                  <time>{clock(m.at)}</time>
+                  <button className="act" aria-label="Copy" onClick={() => void copy(m)}>
+                    {copied === m.id ? <Check size={15} /> : <Copy size={15} />}
                   </button>
-                )}
+                  {canSpeak() && (
+                    <button className={`act ${speakingId === m.id ? 'on' : ''}`} aria-label={speakingId === m.id ? 'Stop speaking' : 'Read aloud'} onClick={() => toggleSpeakMessage(m)}>
+                      {speakingId === m.id ? <Square size={13} /> : <Volume2 size={15} />}
+                    </button>
+                  )}
+                </div>
               </div>
             </div>
           ) : m.role === 'user' ? (
             <div key={m.id} className="row me">
-              <div className="bubble me">{m.text}</div>
-              <time>{clock(m.at)}</time>
+              <div className="bubble">{m.text}</div>
             </div>
           ) : (
             <div key={m.id} className="row ai">
@@ -265,12 +391,13 @@ export function App() {
 
         {transcribing && !busy && (
           <div className="row me">
-            <div className="bubble me soft">Transcribing...</div>
+            <div className="bubble soft">Transcribing...</div>
           </div>
         )}
         {busy && (
           <div className="row ai">
-            <div className="bubble ai typing" aria-label="MJ is typing">
+            <img className="avatar" src="/logo.png" alt="" width={28} height={28} />
+            <div className="typing" aria-label="MJ is typing">
               <i />
               <i />
               <i />
@@ -279,6 +406,18 @@ export function App() {
         )}
         <div ref={endRef} />
       </main>
+
+      {speakingId && (
+        <button
+          className="speaking"
+          onClick={() => {
+            stopSpeaking();
+            setSpeakingId(null);
+          }}
+        >
+          <Volume2 size={16} /> Speaking... tap to stop
+        </button>
+      )}
 
       <form
         className="composer"
@@ -289,19 +428,19 @@ export function App() {
         }}
       >
         {recording ? (
-          <>
+          <div className="pill-input rec-bar">
             <button type="button" className="icon-btn" aria-label="Cancel recording" onClick={cancelRecording}>
               <X size={22} />
             </button>
-            <div className="rec" role="status">
+            <span className="rec" role="status">
               <span className="rec-dot" /> Listening... <b>{mmss(seconds)}</b>
-            </div>
+            </span>
             <button type="button" className="send" aria-label="Send voice message" onClick={() => void finishRecording()}>
               <ArrowUp size={20} />
             </button>
-          </>
+          </div>
         ) : (
-          <>
+          <div className="pill-input">
             <textarea
               ref={inputRef}
               rows={1}
@@ -322,89 +461,86 @@ export function App() {
                 <Mic size={20} />
               </button>
             )}
-          </>
+          </div>
         )}
       </form>
 
-      {showSettings && (
-        <SettingsSheet
-          initial={settings}
+      {drawer && (
+        <div className="drawer-scrim" onClick={() => setDrawer(false)}>
+          <nav className="drawer" aria-label="Chats" onClick={(e) => e.stopPropagation()}>
+            <div className="drawer-top">
+              <img src="/logo.png" alt="" width={34} height={34} />
+              <strong>MJ</strong>
+              <button className="icon-btn" aria-label="Close" onClick={() => setDrawer(false)}>
+                <X size={20} />
+              </button>
+            </div>
+            <button className="new-chat" onClick={() => void newChat()}>
+              <SquarePen size={18} /> New chat
+            </button>
+            <div className="drawer-list">
+              <h5>Shared with Telegram</h5>
+              <button className={`chat-item ${activeId === 'main' ? 'active' : ''}`} onClick={() => select('main')}>
+                <MessageSquare size={16} /> Telegram chat
+              </button>
+              <h5>Chats</h5>
+              {sessions.length === 0 && <p className="note small">No chats yet. Tap New chat to start one.</p>}
+              {sessions.map((s) => (
+                <div key={s.id} className={`chat-item ${activeId === s.id ? 'active' : ''}`}>
+                  <button className="chat-name" onClick={() => select(s.id)}>
+                    <MessageSquare size={16} /> <span>{s.title}</span>
+                  </button>
+                  <button className="mini" aria-label={`Rename ${s.title}`} onClick={() => void renameChat(s)}>
+                    <Pencil size={14} />
+                  </button>
+                  <button className="mini" aria-label={`Delete ${s.title}`} onClick={() => void removeChat(s)}>
+                    <Trash2 size={14} />
+                  </button>
+                </div>
+              ))}
+            </div>
+            <div className="drawer-foot">
+              <button
+                onClick={() => {
+                  setDrawer(false);
+                  setPanel('notifications');
+                }}
+              >
+                <Bell size={18} /> Notifications {unread > 0 && <b className="badge inline">{unread}</b>}
+              </button>
+              <button
+                onClick={() => {
+                  setDrawer(false);
+                  setPanel('settings');
+                }}
+              >
+                <Cog size={18} /> Settings
+              </button>
+            </div>
+          </nav>
+        </div>
+      )}
+
+      {panel === 'notifications' && (
+        <NotificationsPanel settings={settings} onClose={() => setPanel(null)} onUnread={setUnread} onOpenSettings={() => setPanel('settings')} />
+      )}
+      {panel === 'settings' && (
+        <SettingsPanel
+          settings={settings}
           required={!settings.token}
-          onClose={() => setShowSettings(false)}
-          onClear={() => {
-            setMessages([]);
-            setShowSettings(false);
-          }}
+          speakAll={speakAll}
+          onSpeakAll={toggleSpeakAll}
+          onClose={() => setPanel(null)}
           onSave={(s) => {
             saveSettings(s);
+            loadedRef.current = new Set();
+            setChats({});
             setSettings(s);
             setStatus('idle');
-            setShowSettings(false);
+            setPanel(null);
           }}
         />
       )}
-    </div>
-  );
-}
-
-function SettingsSheet(p: { initial: Settings; required: boolean; onClose: () => void; onClear: () => void; onSave: (s: Settings) => void }) {
-  const [url, setUrl] = useState(p.initial.url);
-  const [token, setToken] = useState(p.initial.token);
-  return (
-    <div className="scrim" onClick={p.required ? undefined : p.onClose}>
-      <form
-        className="sheet"
-        onClick={(e) => e.stopPropagation()}
-        onSubmit={(e) => {
-          e.preventDefault();
-          if (token.trim()) p.onSave({ url: url.trim().replace(/\/+$/, ''), token: token.trim() });
-        }}
-      >
-        <div className="grab" />
-        <div className="sheet-head">
-          <h3>{p.required ? 'Connect to MJ' : 'Settings'}</h3>
-          {!p.required && (
-            <button type="button" className="icon-btn" aria-label="Close" onClick={p.onClose}>
-              <X size={20} />
-            </button>
-          )}
-        </div>
-        <label>
-          Backend URL (optional)
-          <input
-            value={url}
-            onChange={(e) => setUrl(e.target.value)}
-            inputMode="url"
-            autoCapitalize="none"
-            autoCorrect="off"
-            spellCheck={false}
-            placeholder="Leave empty to use this site's connection"
-          />
-        </label>
-        <label>
-          Access token
-          <input
-            value={token}
-            onChange={(e) => setToken(e.target.value)}
-            type="password"
-            autoCapitalize="none"
-            autoCorrect="off"
-            spellCheck={false}
-            placeholder="WEB_API_TOKEN from the backend"
-          />
-        </label>
-        <p className="hint">
-          Leave the URL empty unless you use a different server. Works with MJ or any server that offers <code>POST /api/chat</code> and <code>GET /api/history</code>. Settings stay on this phone.
-        </p>
-        <button className="primary" type="submit" disabled={!token.trim()}>
-          Save and connect
-        </button>
-        {!p.required && (
-          <button type="button" className="ghost" onClick={p.onClear}>
-            Clear this screen
-          </button>
-        )}
-      </form>
     </div>
   );
 }

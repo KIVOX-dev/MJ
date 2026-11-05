@@ -27,6 +27,7 @@
     "pdfkit": "^0.20.2",
     "pino": "^10.0.0",
     "unpdf": "^2.1.0",
+    "web-push": "^3.6.7",
     "zod": "^4.0.0"
   },
   "devDependencies": {
@@ -35,6 +36,7 @@
     "@types/node": "^24.0.0",
     "@types/pdfkit": "^0.17.7",
     "@types/supertest": "^6.0.0",
+    "@types/web-push": "^3.6.4",
     "supertest": "^7.0.0",
     "tsx": "^4.0.0",
     "typescript": "^5.9.0",

@@ -153,4 +153,15 @@ describe('telegram voice notes', () => {
     expect(sender.downloadFile).not.toHaveBeenCalled();
     expect(sender.sendText.mock.calls[0]![1]).toMatch(/too long/);
   });
+
+  it('transcribes the sound of round video notes and videos', async () => {
+    const tr = vi.fn().mockResolvedValue('hello MJ');
+    const { deps, sender, respond } = voiceSetup(tr);
+    await processTelegramUpdate({ update_id: 20, message: { message_id: 20, from: { id: 555 }, chat: { id: 555, type: 'private' }, video_note: { file_id: 'vn', duration: 3, file_size: 90000 } } }, deps);
+    expect(tr).toHaveBeenCalledWith(expect.any(Buffer), 'video/mp4');
+    expect(sender.sendText.mock.calls[0]![1]).toBe('🎤 hello MJ');
+    expect(respond).toHaveBeenCalledWith('hello MJ', { channel: 'telegram', chatId: '555' });
+    await processTelegramUpdate({ update_id: 21, message: { message_id: 21, from: { id: 555 }, chat: { id: 555, type: 'private' }, video: { file_id: 'vv', duration: 5, mime_type: 'video/mp4', file_size: 200000 } } }, deps);
+    expect(tr).toHaveBeenCalledTimes(2);
+  });
 });
