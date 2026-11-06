@@ -1,0 +1,17 @@
+# Wakes the AppSail backend and runs due reminders / news alerts / briefing.
+# AppSail sleeps when idle and its in-process timer dies with it, so something external must call /jobs/tick.
+name: MJ tick
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call /jobs/tick
+        env:
+          URL: https://mj-50047408735.development.catalystappsail.in
+          JOBS_SECRET: ${{ secrets.JOBS_SECRET }}
+        run: |
+          curl -sS --retry 3 --retry-delay 5 -m 90 -f -X POST "$URL/jobs/tick" -H "x-job-secret: $JOBS_SECRET"
